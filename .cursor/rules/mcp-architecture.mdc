@@ -1,0 +1,415 @@
+---
+description: MCP server architecture patterns and best practices
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# MCP Server Architecture
+
+Architecture patterns for building scalable, maintainable MCP servers.
+
+## Project Structure
+
+```
+datadog-mcp/
+├── src/
+│   └── datadog_mcp/
+│       ├── __init__.py          # Package exports
+│       ├── server.py            # FastMCP server entry point
+│       ├── auth.py              # Authentication singleton
+│       ├── tools/               # Tool implementations (by domain)
+│       │   ├── __init__.py
+│       │   ├── logs.py
+│       │   ├── metrics.py
+│       │   ├── dashboards.py
+│       │   ├── apm.py
+│       │   └── monitors.py
+│       └── utils/               # Shared utilities
+│           ├── auth.py          # Auth helpers
+│           ├── pagination.py    # Pagination constants
+│           └── response.py      # Response builders
+├── tests/                       # Test files mirror src/
+├── pyproject.toml              # Dependencies & config
+└── README.md
+```
+
+## Separation of Concerns
+
+### Server Layer - Routing Only
+
+```python
+# server.py - FastMCP definitions ONLY
+from fastmcp import FastMCP
+from datadog_mcp.tools.logs import search_logs as _search_logs
+
+mcp = FastMCP("Datadog Integration")
+
+@mcp.tool()
+def search_logs(
+    query: str,
+    from_time: str,
+    to_time: str
+) -> dict[str, object]:
+    """Search logs (documented here for the AI)."""
+    auth = get_auth_instance()
+    return _search_logs(query, from_time, to_time, auth=auth)
+```
+
+### Tool Layer - Business Logic
+
+```python
+# tools/logs.py - Implementation details
+from datadog_api_client.v2.api.logs_api import LogsApi
+from typing import TypedDict
+
+class SearchLogsResponse(TypedDict):
+    success: bool
+    logs: list[LogEntry]
+    count: int
+
+def search_logs(
+    query: str,
+    from_time: str,
+    to_time: str,
+    auth: DatadogAuth
+) -> SearchLogsResponse:
+    """Internal implementation with full logic."""
+    api_instance = LogsApi(auth.api_client)
+    # ... implementation
+    return {"success": True, "logs": [...], "count": 10}
+```
+
+**Why**: Keep FastMCP decorators separate from implementation. Makes testing easier and code more modular.
+
+## Authentication Patterns
+
+### Singleton Pattern for API Client
+
+```python
+# auth.py
+from typing import Final
+from datadog_api_client import Configuration, ApiClient
+
+class DatadogAuth:
+    """Singleton-style auth manager."""
+    
+    def __init__(
+        self,
+        api_key: str | None = None,
+        app_key: str | None = None,
+        site: str | None = None
+    ):
+        self.api_key: Final = api_key or os.getenv("DD_API_KEY")
+        self.app_key: Final = app_key or os.getenv("DD_APP_KEY")
+        self.site: Final = site or os.getenv("DD_SITE", "datadoghq.com")
+        
+        if not self.api_key or not self.app_key:
+            raise ValueError("DD_API_KEY and DD_APP_KEY required")
+        
+        configuration = Configuration()
+        configuration.api_key["apiKeyAuth"] = self.api_key
+        configuration.api_key["appKeyAuth"] = self.app_key
+        configuration.server_variables["site"] = self.site
+        
+        self._api_client: Final = ApiClient(configuration)
+    
+    @property
+    def api_client(self) -> ApiClient:
+        """No context manager needed - direct access."""
+        return self._api_client
+```
+
+### Factory Pattern for API Instances
+
+```python
+# utils/auth.py
+from typing import TypeVar
+
+T = TypeVar('T')
+
+def get_api_instance(
+    api_class: type[T],
+    auth: DatadogAuth | None = None
+) -> tuple[T, DatadogAuth]:
+    """Factory for creating API instances with auth."""
+    if auth is None:
+        auth = DatadogAuth()
+    
+    api_instance = api_class(auth.api_client)
+    return api_instance, auth
+```
+
+**Benefits**:
+- Single API client reused across all tools
+- No context managers needed
+- Easy to test with dependency injection
+- Lazy initialization
+
+## Response Handling Patterns
+
+### Builder Pattern for Responses
+
+```python
+# utils/response.py
+from typing import TypeAlias
+
+JsonValue: TypeAlias = str | int | float | bool | None | dict[str, "JsonValue"] | list["JsonValue"]
+
+class ResponseBuilder:
+    """Consistent response formatting with auto-truncation."""
+    
+    MAX_SIZE: Final[int] = 50_000  # 50KB
+    
+    @staticmethod
+    def success(
+        data_key: str,
+        data: list[object],
+        **metadata: object
+    ) -> dict[str, object]:
+        response = {
+            "success": True,
+            data_key: data,
+            "count": len(data),
+            **metadata
+        }
+        return ResponseBuilder._check_and_truncate(response, data_key)
+    
+    @staticmethod
+    def _check_and_truncate(
+        response: dict[str, object],
+        data_key: str
+    ) -> dict[str, object]:
+        # Size check and binary search truncation
+        pass
+
+def format_error_response(
+    data_key: str,
+    error: Exception
+) -> dict[str, object]:
+    """Consistent error responses."""
+    return {
+        "success": False,
+        "error": str(error),
+        data_key: []
+    }
+```
+
+**Usage**:
+
+```python
+# In tool implementation
+try:
+    results = api.search(query)
+    return ResponseBuilder.success("logs", results, has_more=True)
+except ApiException as e:
+    return format_error_response("logs", e)
+```
+
+## Pagination Pattern
+
+### Configuration
+
+```python
+# utils/pagination.py
+from typing import Final
+
+DEFAULT_PAGE_SIZE: Final[int] = 25
+MAX_PAGE_SIZE: Final[int] = 50
+
+def validate_page_size(size: int) -> int:
+    """Clamp page size to valid range."""
+    return max(1, min(size, MAX_PAGE_SIZE))
+```
+
+### Implementation
+
+```python
+from typing import TypedDict, NotRequired
+
+class PaginatedResponse(TypedDict):
+    success: bool
+    count: int
+    next_cursor: NotRequired[str | None]
+    has_more: NotRequired[bool]
+
+def search_logs(
+    query: str,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
+    auth: DatadogAuth
+) -> dict[str, object]:
+    """Tool with pagination support."""
+    page_size = validate_page_size(page_size)
+    
+    # Build request with cursor
+    response = api.search(query, page_size=page_size, cursor=cursor)
+    
+    return ResponseBuilder.success(
+        "logs",
+        response.logs,
+        next_cursor=response.next_page_cursor,
+        has_more=response.has_more
+    )
+```
+
+## Domain Organization
+
+### Group by Feature Domain
+
+```
+tools/
+├── logs.py          # All log-related tools
+├── metrics.py       # All metric-related tools
+├── dashboards.py    # All dashboard-related tools
+├── apm.py          # All APM/trace tools
+├── monitors.py      # All monitor/alert tools
+└── aggregations.py  # Specialized aggregation tools
+```
+
+Each file contains related tools that work with the same API domain.
+
+### Shared Utilities
+
+```
+utils/
+├── auth.py          # Authentication helpers
+├── pagination.py    # Pagination constants/helpers
+├── response.py      # Response builders
+└── validation.py    # Input validation (if needed)
+```
+
+## Type Safety Patterns
+
+### TypedDict for API Responses
+
+```python
+from typing import TypedDict, NotRequired
+
+class LogAttributes(TypedDict):
+    timestamp: str
+    message: str
+    status: str
+    service: str | None
+    tags: list[str]
+    attributes: dict[str, str | int | float | bool]
+
+class LogEntry(TypedDict):
+    id: str
+    attributes: LogAttributes
+
+class SearchLogsResponse(TypedDict):
+    success: bool
+    logs: list[LogEntry]
+    count: int
+    next_cursor: NotRequired[str | None]
+    has_more: NotRequired[bool]
+    truncated: NotRequired[bool]
+    warning: NotRequired[str]
+```
+
+### Type Aliases for Complex Types
+
+```python
+from typing import TypeAlias
+
+# Time representations
+Timestamp: TypeAlias = int  # Unix seconds
+DateMath: TypeAlias = str   # "now-1h", "now-7d"
+ISODate: TypeAlias = str    # "2024-01-28T10:00:00Z"
+TimeValue: TypeAlias = Timestamp | DateMath | ISODate
+
+# API responses
+LogsFilter: TypeAlias = dict[str, str | list[str]]
+MetricQuery: TypeAlias = str  # "avg:system.cpu{*}"
+```
+
+## Error Handling Strategy
+
+### Layered Error Handling
+
+```python
+# Layer 1: API Client Errors
+try:
+    response = api_instance.search_logs(body=request)
+except ApiException as e:
+    return format_error_response("logs", e)
+
+# Layer 2: Data Validation Errors
+try:
+    validated_data = validate_response(response)
+except ValueError as e:
+    return format_error_response("logs", e)
+
+# Layer 3: Unexpected Errors
+except Exception as e:
+    logger.error(f"Unexpected error in search_logs: {e}")
+    return format_error_response("logs", Exception("Internal error"))
+```
+
+### Graceful Degradation
+
+```python
+def format_log_entry(log: object) -> LogEntry:
+    """Extract log data with fallbacks."""
+    return {
+        "id": log.id if hasattr(log, 'id') else "unknown",
+        "timestamp": (
+            log.attributes.timestamp.isoformat()
+            if hasattr(log, 'attributes') and hasattr(log.attributes, 'timestamp')
+            else None
+        ),
+        "message": getattr(log.attributes, 'message', None),
+        "status": getattr(log.attributes, 'status', None),
+        # ... with fallbacks for all fields
+    }
+```
+
+## Testing Patterns
+
+### Dependency Injection for Testability
+
+```python
+# Production code
+def search_logs(
+    query: str,
+    auth: DatadogAuth | None = None
+) -> dict[str, object]:
+    api_instance, auth = get_api_instance(LogsApi, auth)
+    # ... implementation
+
+# Test code
+def test_search_logs():
+    mock_auth = create_mock_auth()
+    result = search_logs("test query", auth=mock_auth)
+    assert result["success"] is True
+```
+
+## Configuration Management
+
+```python
+# Use environment variables for configuration
+import os
+from typing import Final
+
+API_KEY: Final = os.getenv("DD_API_KEY", "")
+APP_KEY: Final = os.getenv("DD_APP_KEY", "")
+SITE: Final = os.getenv("DD_SITE", "datadoghq.com")
+
+# Validate at startup
+if not API_KEY or not APP_KEY:
+    raise ValueError("DD_API_KEY and DD_APP_KEY must be set")
+```
+
+## Checklist
+
+- [ ] Clear separation: server.py (routing) vs tools/ (logic)
+- [ ] Singleton auth pattern with factory for API instances
+- [ ] ResponseBuilder for consistent formatting
+- [ ] Pagination support with sensible defaults
+- [ ] Tools organized by domain (logs, metrics, etc.)
+- [ ] Shared utilities in utils/ directory
+- [ ] TypedDict for all API responses
+- [ ] Type aliases for complex types
+- [ ] Layered error handling with graceful degradation
+- [ ] Dependency injection for testability
+- [ ] Environment-based configuration

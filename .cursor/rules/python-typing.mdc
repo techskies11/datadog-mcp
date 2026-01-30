@@ -1,0 +1,284 @@
+---
+description: Strict Python typing standards for excellent type safety
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python Typing Standards
+
+This project maintains STRICT typing standards. NO `Any`, NO untyped `dict`/`list`, NO `object` unless absolutely necessary.
+
+## Core Principles
+
+### ❌ NEVER Use These
+```python
+# ❌ BAD - No Any types
+def process(data: Any) -> Any:
+    pass
+
+# ❌ BAD - No untyped collections
+def get_data() -> dict:
+    pass
+
+def process_items(items: list) -> None:
+    pass
+
+# ❌ BAD - No implicit Any
+def transform(callback):  # callback is implicitly Any
+    pass
+```
+
+### ✅ ALWAYS Use These
+```python
+# ✅ GOOD - Specific types
+from typing import TypedDict, Literal
+from collections.abc import Callable, Sequence, Mapping
+
+class UserData(TypedDict):
+    id: str
+    name: str
+    age: int
+
+def process(data: UserData) -> UserData:
+    pass
+
+# ✅ GOOD - Typed collections (Python 3.10+ syntax)
+def get_data() -> dict[str, int]:
+    pass
+
+def process_items(items: list[str]) -> None:
+    pass
+
+# ✅ GOOD - Typed callbacks
+def transform(callback: Callable[[str], int]) -> int:
+    pass
+```
+
+## Modern Python Syntax (3.10+)
+
+### Use Built-in Generics
+```python
+# ❌ OLD - Don't import from typing
+from typing import List, Dict, Tuple, Optional, Union
+
+def process(data: List[str]) -> Dict[str, int]:
+    pass
+
+# ✅ NEW - Use built-in types directly
+def process(data: list[str]) -> dict[str, int]:
+    pass
+```
+
+### Use Union Shorthand
+```python
+# ❌ OLD
+from typing import Optional, Union
+
+def get_user(user_id: str) -> Optional[User]:
+    pass
+
+def parse(value: Union[str, int, float]) -> str:
+    pass
+
+# ✅ NEW
+def get_user(user_id: str) -> User | None:
+    pass
+
+def parse(value: str | int | float) -> str:
+    pass
+
+# ✅ IMPORTANT - Always put None last
+result: str | int | None  # ✅ Correct
+result: None | str | int  # ❌ Wrong order
+```
+
+## TypedDict for Structured Dicts
+
+When returning dict responses, define explicit TypedDict classes:
+
+```python
+# ❌ BAD - Untyped dict
+def search_logs(query: str) -> dict:
+    return {
+        "success": True,
+        "logs": [...],
+        "count": 10
+    }
+
+# ✅ GOOD - TypedDict
+from typing import TypedDict, NotRequired
+
+class LogEntry(TypedDict):
+    id: str
+    timestamp: str
+    message: str
+    status: str
+    service: str | None
+    tags: list[str]
+
+class SearchLogsResponse(TypedDict):
+    success: bool
+    logs: list[LogEntry]
+    count: int
+    next_cursor: NotRequired[str | None]  # Optional field
+    has_more: NotRequired[bool]
+
+def search_logs(query: str) -> SearchLogsResponse:
+    return {
+        "success": True,
+        "logs": [...],
+        "count": 10
+    }
+```
+
+## Generic Functions
+
+Use TypeVar for generic functions:
+
+```python
+from typing import TypeVar
+
+T = TypeVar('T')
+
+# ✅ GOOD - Generic API instance creation
+def get_api_instance(
+    api_class: type[T],
+    auth: DatadogAuth | None = None
+) -> tuple[T, DatadogAuth]:
+    if auth is None:
+        auth = DatadogAuth()
+    api_instance = api_class(auth.api_client)
+    return api_instance, auth
+```
+
+## Literal Types for Fixed Values
+
+Use `Literal` for parameters with fixed valid values:
+
+```python
+from typing import Literal
+
+# ✅ GOOD - Explicit valid values
+def aggregate_logs(
+    aggregation: Literal["count", "cardinality", "pc75", "pc90", "pc95", "pc99", "sum", "min", "max", "avg"],
+    sort: Literal["timestamp", "-timestamp"] = "timestamp"
+) -> dict[str, object]:
+    pass
+```
+
+## Abstract Collections
+
+For function parameters, prefer abstract types from `collections.abc`:
+
+```python
+from collections.abc import Sequence, Mapping, Iterable
+
+# ✅ GOOD - Accept any sequence type
+def process_items(items: Sequence[str]) -> list[str]:
+    return [item.upper() for item in items]
+
+# ✅ GOOD - Accept any mapping
+def validate_config(config: Mapping[str, str | int]) -> bool:
+    pass
+
+# ✅ GOOD - Accept any iterable
+def sum_values(values: Iterable[int]) -> int:
+    return sum(values)
+```
+
+## Type Aliases
+
+Use `TypeAlias` for complex types:
+
+```python
+from typing import TypeAlias
+
+# ✅ GOOD - Clear type aliases
+JsonValue: TypeAlias = str | int | float | bool | None | dict[str, "JsonValue"] | list["JsonValue"]
+Timestamp: TypeAlias = int  # Unix timestamp in seconds
+DateMath: TypeAlias = str  # Datadog date math like "now-1h"
+TimeValue: TypeAlias = Timestamp | DateMath | str  # ISO 8601 or timestamp or date math
+```
+
+## FastMCP Context Types
+
+When using FastMCP context features:
+
+```python
+from fastmcp import Context
+
+# ✅ GOOD - Explicitly type context
+def my_tool(context: Context, data: str) -> dict[str, str]:
+    context.info(f"Processing {data}")
+    return {"result": "success"}
+```
+
+## API Response Handling
+
+Always type API responses explicitly:
+
+```python
+# ❌ BAD
+def handle_response(response):
+    if hasattr(response, 'data'):
+        return response.data
+
+# ✅ GOOD
+from datadog_api_client.v2.model.logs_list_response import LogsListResponse
+
+def handle_response(response: LogsListResponse) -> list[LogEntry]:
+    if hasattr(response, 'data') and response.data:
+        return [format_log(log) for log in response.data]
+    return []
+```
+
+## Type Checking
+
+Enable strict type checking with mypy or pyright:
+
+```toml
+# pyproject.toml
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_any_generics = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.10"
+```
+
+## Exception Handling
+
+Type exceptions properly:
+
+```python
+# ✅ GOOD - Specific exception types
+def api_call() -> dict[str, object]:
+    try:
+        response = client.query()
+        return {"success": True, "data": response}
+    except ApiException as e:
+        return {"success": False, "error": str(e)}
+    except ValueError as e:
+        return {"success": False, "error": f"Invalid value: {e}"}
+```
+
+## Summary Checklist
+
+- [ ] No `Any` types anywhere
+- [ ] All `dict` and `list` have type parameters
+- [ ] Use Python 3.10+ syntax (no `List`, `Dict`, `Optional`, `Union`)
+- [ ] Use `TypedDict` for structured dictionaries
+- [ ] Use `Literal` for fixed value parameters
+- [ ] Use `TypeAlias` for complex recurring types
+- [ ] Functions have complete type hints (parameters + return)
+- [ ] Use `collections.abc` abstract types for parameters
+- [ ] Put `None` last in union types
+- [ ] Enable strict type checking (mypy/pyright)
