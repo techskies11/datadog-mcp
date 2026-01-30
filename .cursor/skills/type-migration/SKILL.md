@@ -158,8 +158,8 @@ def parse_json(data: object) -> object:
 from typing import TypeAlias
 
 JsonValue: TypeAlias = (
-    str | int | float | bool | None 
-    | dict[str, "JsonValue"] 
+    str | int | float | bool | None
+    | dict[str, "JsonValue"]
     | list["JsonValue"]
 )
 
@@ -257,7 +257,7 @@ MetricQuery: TypeAlias = str  # "avg:system.cpu{*}"
 def search_logs(query: str, from_time, to_time) -> dict:
     api = LogsApi(auth.api_client)
     response = api.list_logs(...)
-    
+
     logs = []
     if response.data:
         for log in response.data:
@@ -265,7 +265,7 @@ def search_logs(query: str, from_time, to_time) -> dict:
                 "id": log.id,
                 "message": log.attributes.message
             })
-    
+
     return {
         "success": True,
         "logs": logs
@@ -292,7 +292,7 @@ def search_logs(
 ) -> SearchLogsResponse:
     api: LogsApi = LogsApi(auth.api_client)
     response: LogsListResponse = api.list_logs(...)
-    
+
     logs: list[LogEntry] = []
     if response.data:
         for log in response.data:
@@ -301,7 +301,7 @@ def search_logs(
                 "message": log.attributes.message if hasattr(log.attributes, 'message') else None,
                 "timestamp": log.attributes.timestamp.isoformat() if hasattr(log.attributes, 'timestamp') else None
             })
-    
+
     return {
         "success": True,
         "logs": logs,
@@ -327,7 +327,7 @@ from typing import Final
 
 class ResponseBuilder:
     MAX_SIZE: Final[int] = 50_000
-    
+
     @staticmethod
     def success(
         data_key: str,

@@ -72,28 +72,28 @@ def my_new_tool(
     auth: DatadogAuth | None = None
 ) -> ToolResponse:
     """Internal implementation with business logic.
-    
+
     Args:
         param1: Description of parameter 1
         param2: Description of parameter 2 (optional)
         auth: DatadogAuth instance (injected)
-    
+
     Returns:
         ToolResponse with data and metadata
     """
     # Get API instance
     api_instance, auth = get_api_instance(RelevantApi, auth)
-    
+
     try:
         # Build API request
         request = RequestModel(
             param1=param1,
             param2=param2
         )
-        
+
         # Call API
         response = api_instance.call_endpoint(body=request)
-        
+
         # Format data
         items: list[ItemData] = []
         if hasattr(response, 'data') and response.data:
@@ -103,10 +103,10 @@ def my_new_tool(
                     "name": item.name if hasattr(item, 'name') else "",
                     "value": item.value if hasattr(item, 'value') else 0
                 })
-        
+
         # Use ResponseBuilder for auto-truncation
         return ResponseBuilder.success("data", items)
-        
+
     except Exception as e:
         return format_error_response("data", e)
 ```
@@ -123,24 +123,24 @@ def my_new_tool(
     param2: int | None = None
 ) -> dict[str, object]:
     """One-line summary of what this tool does.
-    
+
     ⚠️ IMPORTANT USAGE NOTES: When to use this tool vs alternatives.
-    
+
     Use this when:
     - Specific use case 1
     - Specific use case 2
-    
+
     DO NOT use for:
     - Alternative tool 1 (use other_tool instead)
     - Alternative tool 2 (use another_tool instead)
-    
+
     Args:
         param1: Clear description with examples (e.g., "user_id" or "email@example.com")
         param2: Clear description with range/constraints (default: None, range: 1-100)
-    
+
     Returns:
         dict with success flag, data array, and count
-    
+
     Examples:
         my_new_tool("value1")
         my_new_tool("value1", param2=50)
@@ -215,15 +215,15 @@ def search_items(
 ) -> dict[str, object]:
     """Search with pagination."""
     from ..utils.pagination import validate_page_size
-    
+
     page_size = validate_page_size(page_size)
     api_instance, auth = get_api_instance(ItemsApi, auth)
-    
+
     try:
         response = api_instance.search(query=query, limit=page_size, cursor=cursor)
-        
+
         items = [format_item(item) for item in response.data]
-        
+
         return ResponseBuilder.success(
             "items",
             items,
@@ -245,7 +245,7 @@ def count_items(
 ) -> dict[str, object]:
     """Count without fetching data."""
     api_instance, auth = get_api_instance(ItemsApi, auth)
-    
+
     try:
         response = api_instance.aggregate(
             query=query,
@@ -253,9 +253,9 @@ def count_items(
             to_time=to_time,
             aggregation="count"
         )
-        
+
         count = extract_count(response)
-        
+
         return {
             "success": True,
             "count": count,
@@ -280,16 +280,16 @@ def create_item(
 ) -> dict[str, object]:
     """Create new item."""
     api_instance, auth = get_api_instance(ItemsApi, auth)
-    
+
     try:
         request = CreateItemRequest(
             name=name,
             config=config,
             tags=tags or []
         )
-        
+
         response = api_instance.create(body=request)
-        
+
         return {
             "success": True,
             "item_id": response.id,

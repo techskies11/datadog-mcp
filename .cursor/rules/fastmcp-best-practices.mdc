@@ -42,7 +42,7 @@ def search_users(
     limit: int = 50
 ) -> UserResponse:
     """Search users by various fields.
-    
+
     Args:
         query: Search query
         field: Specific field to search (None searches all)
@@ -172,29 +172,29 @@ def search_logs(
     cursor: str | None = None
 ) -> SearchLogsResponse:
     """Search and VIEW log entries with pagination.
-    
+
     ⚠️ IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
     For COUNTING logs, use count_logs instead (10x faster).
-    
+
     Use this when:
     - Need to view actual log messages and details
     - Debugging specific issues
     - Investigating error details
-    
+
     DO NOT use for:
     - Counting logs (use count_logs)
     - Counting unique values (use count_unique)
-    
+
     Args:
         query: Search query in Datadog syntax (e.g., "status:error service:api")
         from_time: Start time - ISO 8601, date math like "now-1h", or timestamp ms
         to_time: End time - ISO 8601, date math like "now", or timestamp ms
         page_size: Logs per page (default: 25, max: 50)
         cursor: Pagination cursor from previous response
-    
+
     Returns:
         SearchLogsResponse with logs and pagination info
-    
+
     Examples:
         search_logs("status:error", "now-1h", "now")
         search_logs("service:api", "2024-01-28T10:00:00Z", "2024-01-28T11:00:00Z")
@@ -274,15 +274,15 @@ Use resources to provide context the AI can access without being asked:
 @mcp.resource("datadog://status")
 def get_datadog_status() -> str:
     """Current Datadog account status and recent activity.
-    
+
     Provides context about active monitors, recent dashboards, and system health.
     Use this when you need to understand the current state before taking action.
     """
     auth = get_auth_instance()
-    
+
     monitors = _list_monitors(limit=10, auth=auth)
     dashboards = _list_dashboards(limit=5, auth=auth)
-    
+
     return f"""# Datadog Account Status
 
 ## Active Monitors
@@ -306,12 +306,12 @@ Total: {dashboards.get('count', 0)}
 @mcp.prompt()
 def investigate_errors() -> str:
     """Template for investigating error logs in production.
-    
+
     Use this when: User asks about errors, issues, or problems.
     """
     now = datetime.utcnow()
     hour_ago = now - timedelta(hours=1)
-    
+
     return f"""I'll help you investigate errors. Here's what I'll do:
 
 1. Search for error logs in the last hour:
@@ -390,21 +390,21 @@ import json
 
 class ResponseBuilder:
     MAX_RESPONSE_SIZE = 50_000  # 50KB
-    
+
     @staticmethod
     def success[T: BaseModel](
         response: T,
         max_items_field: str | None = None
     ) -> T:
         """Check response size and truncate if needed.
-        
+
         Args:
             response: Pydantic response model
             max_items_field: Field name containing list to truncate (e.g., "logs")
         """
         # Check size
         size = len(response.model_dump_json())
-        
+
         if size > ResponseBuilder.MAX_RESPONSE_SIZE and max_items_field:
             # Truncate list field using binary search
             items = getattr(response, max_items_field)
@@ -412,7 +412,7 @@ class ResponseBuilder:
                 # Find max items that fit
                 low, high = 1, len(items)
                 best = 1
-                
+
                 while low <= high:
                     mid = (low + high) // 2
                     test_response = response.model_copy(
@@ -423,14 +423,14 @@ class ResponseBuilder:
                         low = mid + 1
                     else:
                         high = mid - 1
-                
+
                 # Apply truncation
                 setattr(response, max_items_field, items[:best])
                 if hasattr(response, 'truncated'):
                     response.truncated = True
                 if hasattr(response, 'warning'):
                     response.warning = f"Response truncated from {len(items)} to {best} items"
-        
+
         return response
 ```
 

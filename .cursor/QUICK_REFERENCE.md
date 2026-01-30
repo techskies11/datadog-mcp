@@ -83,23 +83,23 @@ def tool_name(
     param2: int = 10
 ) -> dict[str, object]:
     """One-line summary of what this tool does.
-    
+
     ⚠️ IMPORTANT: When to use this vs alternatives.
-    
+
     Use this when:
     - Specific scenario 1
     - Specific scenario 2
-    
+
     DO NOT use for:
     - Use other_tool instead
-    
+
     Args:
         param1: Description with example (e.g., "user_id" or "email@example.com")
         param2: Description with range (default: 10, range: 1-100)
-    
+
     Returns:
         dict with success, data, and count fields
-    
+
     Examples:
         tool_name("value1")
         tool_name("value1", param2=50)
@@ -124,11 +124,11 @@ def _tool_name(
 ) -> ToolResponse:
     """Internal implementation."""
     api_instance, auth = get_api_instance(RelevantApi, auth)
-    
+
     try:
         response = api_instance.call(param1=param1)
         items = [format_item(item) for item in response.data]
-        
+
         return ResponseBuilder.success("data", items)
     except Exception as e:
         return format_error_response("data", e)
@@ -160,9 +160,9 @@ def search_items(
     auth: DatadogAuth | None = None
 ) -> dict[str, object]:
     page_size = min(page_size, MAX_PAGE_SIZE)
-    
+
     response = api.search(query, limit=page_size, cursor=cursor)
-    
+
     return ResponseBuilder.success(
         "items",
         response.items,

@@ -1,8 +1,6 @@
 """Pagination utilities for consistent pagination across tools."""
 
 from dataclasses import dataclass
-from typing import Optional
-
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 50
@@ -11,11 +9,11 @@ MAX_PAGE_SIZE = 50
 @dataclass
 class PaginationParams:
     """Parameters for paginated requests."""
-    
+
     page: int = 1
     page_size: int = DEFAULT_PAGE_SIZE
-    cursor: Optional[str] = None
-    
+    cursor: str | None = None
+
     def validate(self) -> None:
         """Validate pagination parameters."""
         if self.page < 1:
@@ -29,14 +27,14 @@ class PaginationParams:
 @dataclass
 class PaginatedResponse:
     """Standard paginated response structure."""
-    
+
     data: list
     page: int
     page_size: int
-    total_count: Optional[int] = None
+    total_count: int | None = None
     has_next: bool = False
-    next_cursor: Optional[str] = None
-    
+    next_cursor: str | None = None
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         result = {
@@ -46,11 +44,11 @@ class PaginatedResponse:
             "count": len(self.data),
             "has_next": self.has_next,
         }
-        
+
         if self.total_count is not None:
             result["total_count"] = self.total_count
-        
+
         if self.next_cursor is not None:
             result["next_cursor"] = self.next_cursor
-        
+
         return result

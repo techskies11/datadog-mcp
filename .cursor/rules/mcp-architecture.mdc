@@ -92,7 +92,7 @@ from datadog_api_client import Configuration, ApiClient
 
 class DatadogAuth:
     """Singleton-style auth manager."""
-    
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -102,17 +102,17 @@ class DatadogAuth:
         self.api_key: Final = api_key or os.getenv("DD_API_KEY")
         self.app_key: Final = app_key or os.getenv("DD_APP_KEY")
         self.site: Final = site or os.getenv("DD_SITE", "datadoghq.com")
-        
+
         if not self.api_key or not self.app_key:
             raise ValueError("DD_API_KEY and DD_APP_KEY required")
-        
+
         configuration = Configuration()
         configuration.api_key["apiKeyAuth"] = self.api_key
         configuration.api_key["appKeyAuth"] = self.app_key
         configuration.server_variables["site"] = self.site
-        
+
         self._api_client: Final = ApiClient(configuration)
-    
+
     @property
     def api_client(self) -> ApiClient:
         """No context manager needed - direct access."""
@@ -134,7 +134,7 @@ def get_api_instance(
     """Factory for creating API instances with auth."""
     if auth is None:
         auth = DatadogAuth()
-    
+
     api_instance = api_class(auth.api_client)
     return api_instance, auth
 ```
@@ -157,9 +157,9 @@ JsonValue: TypeAlias = str | int | float | bool | None | dict[str, "JsonValue"] 
 
 class ResponseBuilder:
     """Consistent response formatting with auto-truncation."""
-    
+
     MAX_SIZE: Final[int] = 50_000  # 50KB
-    
+
     @staticmethod
     def success(
         data_key: str,
@@ -173,7 +173,7 @@ class ResponseBuilder:
             **metadata
         }
         return ResponseBuilder._check_and_truncate(response, data_key)
-    
+
     @staticmethod
     def _check_and_truncate(
         response: dict[str, object],
@@ -240,10 +240,10 @@ def search_logs(
 ) -> dict[str, object]:
     """Tool with pagination support."""
     page_size = validate_page_size(page_size)
-    
+
     # Build request with cursor
     response = api.search(query, page_size=page_size, cursor=cursor)
-    
+
     return ResponseBuilder.success(
         "logs",
         response.logs,

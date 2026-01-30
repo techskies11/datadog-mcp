@@ -86,7 +86,7 @@ class CreateMonitorRequest(BaseModel):
     message: str = Field(..., description="Notification message")
     priority: int = Field(default=3, ge=1, le=5, description="Priority 1-5")
     tags: list[str] = Field(default_factory=list, max_length=50)
-    
+
     @field_validator('query')
     @classmethod
     def validate_query(cls, v: str) -> str:
@@ -119,7 +119,7 @@ class LogEntry(BaseModel):
         validate_assignment=True,  # Validate on assignment
         str_strip_whitespace=True,  # Auto-strip strings
     )
-    
+
     id: str
     message: str | None = None
     timestamp: str | None = None
@@ -191,7 +191,7 @@ def search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
     """Search logs with Pydantic validation."""
     api = LogsApi(auth.api_client)
     response = api.list_logs(...)
-    
+
     # ✅ Parse and validate API response
     logs: list[LogEntry] = []
     if hasattr(response, 'data') and response.data:
@@ -202,7 +202,7 @@ def search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
                 message=log.attributes.message if hasattr(log.attributes, 'message') else None,
                 timestamp=log.attributes.timestamp.isoformat() if hasattr(log.attributes, 'timestamp') else None
             ))
-    
+
     return SearchLogsResponse(
         success=True,
         logs=logs,
