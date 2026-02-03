@@ -789,3 +789,12 @@ def unsilence_monitor(monitor_id: int, scope: str | None = None) -> dict:
     """
     auth = get_auth_instance()
     return _unmute_monitor(monitor_id, scope, auth=auth)
+
+
+def main() -> None:
+    """Main entry point for the MCP server."""
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

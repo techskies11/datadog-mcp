@@ -1,16 +1,17 @@
 {
   "mcpServers": {
     "datadog": {
-      "command": "uv",
+      "command": "uvx",
       "args": [
-        "--directory",
-        "/Users/alejandrovelez/Desktop/datadog-mcp",
-        "run",
+        "--from",
+        "fastmcp",
         "fastmcp",
         "run",
-        "src/datadog_mcp/server.py"
+        "datadog_mcp.server:mcp"
       ],
+      "cwd": "/Users/alejandrovelez/Desktop/datadog-mcp",
       "env": {
+        "PYTHONPATH": "/Users/alejandrovelez/Desktop/datadog-mcp/src",
         "DD_API_KEY": "your-datadog-api-key-here",
         "DD_APP_KEY": "your-datadog-application-key-here",
         "DD_SITE": "datadoghq.com"
