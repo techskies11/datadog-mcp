@@ -13,7 +13,6 @@ from datadog_mcp.tools.apm import get_trace as _get_trace
 from datadog_mcp.tools.apm import list_services as _list_services
 from datadog_mcp.tools.apm import search_spans as _search_spans
 from datadog_mcp.tools.dashboards import create_dashboard as _create_dashboard
-from datadog_mcp.tools.dashboards import delete_dashboard as _delete_dashboard
 from datadog_mcp.tools.dashboards import get_dashboard as _get_dashboard
 from datadog_mcp.tools.dashboards import list_dashboards as _list_dashboards
 from datadog_mcp.tools.dashboards import update_dashboard as _update_dashboard
@@ -23,7 +22,6 @@ from datadog_mcp.tools.metrics import list_metrics as _list_metrics
 from datadog_mcp.tools.metrics import query_metrics as _query_metrics
 from datadog_mcp.tools.metrics import submit_metrics as _submit_metrics
 from datadog_mcp.tools.monitors import create_monitor as _create_monitor
-from datadog_mcp.tools.monitors import delete_monitor as _delete_monitor
 from datadog_mcp.tools.monitors import get_monitor as _get_monitor
 from datadog_mcp.tools.monitors import list_monitors as _list_monitors
 from datadog_mcp.tools.monitors import mute_monitor as _mute_monitor
@@ -527,22 +525,6 @@ def update_existing_dashboard(
     )
 
 
-@mcp.tool()
-def delete_dashboard(dashboard_id: str) -> dict:
-    """Permanently delete a dashboard.
-
-    Use this when: Dashboard is no longer needed.
-
-    Args:
-        dashboard_id: Dashboard to delete
-
-    Returns:
-        dict with deletion status
-    """
-    auth = get_auth_instance()
-    return _delete_dashboard(dashboard_id, auth=auth)
-
-
 # ===== APM / TRACES TOOLS =====
 
 
@@ -736,22 +718,6 @@ def update_alert_monitor(
     """
     auth = get_auth_instance()
     return _update_monitor(monitor_id, name, query, message, tags, priority, options, auth=auth)
-
-
-@mcp.tool()
-def delete_alert_monitor(monitor_id: int) -> dict:
-    """Permanently remove a monitor.
-
-    Use this when: Monitor is no longer needed.
-
-    Args:
-        monitor_id: Monitor to delete
-
-    Returns:
-        dict with deletion status
-    """
-    auth = get_auth_instance()
-    return _delete_monitor(monitor_id, auth=auth)
 
 
 @mcp.tool()

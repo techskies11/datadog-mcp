@@ -191,7 +191,6 @@ search_logs()
 query_metrics()
 list_dashboards()
 create_dashboard()
-delete_monitor()
 count_logs()
 
 # ❌ BAD

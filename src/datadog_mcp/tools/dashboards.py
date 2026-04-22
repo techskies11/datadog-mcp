@@ -229,32 +229,3 @@ def update_dashboard(
 
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-
-def delete_dashboard(dashboard_id: str, auth: DatadogAuth | None = None) -> dict:
-    """Delete a dashboard.
-
-    Args:
-        dashboard_id: The unique identifier of the dashboard to delete
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Deletion result
-    """
-    if auth is None:
-        auth = DatadogAuth()
-
-    # Use API client directly - no context manager needed
-    api_instance = DashboardsApi(auth.api_client)
-
-    try:
-        api_instance.delete_dashboard(dashboard_id)
-
-        return {
-            "success": True,
-            "dashboard_id": dashboard_id,
-            "message": "Dashboard deleted successfully",
-        }
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}

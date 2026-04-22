@@ -64,30 +64,11 @@ class MonitorResponse(BaseModel):
     monitor_id: int | None = None
     error: str | None = None
 
-# ❌ DANGEROUS - Destructive operations without safeguards
-@mcp.tool()
-def delete_all_monitors() -> MonitorResponse:
-    """Delete all monitors."""
-    pass
-
 # ✅ SAFE - Read-only operations preferred
 @mcp.tool()
 def list_monitors(state: str | None = None) -> MonitorResponse:
     """List monitors with optional state filter."""
     pass
-
-# ✅ ACCEPTABLE - Destructive with explicit confirmation
-@mcp.tool()
-def delete_monitor(
-    monitor_id: int,
-    confirm_id: int  # Must match monitor_id
-) -> MonitorResponse:
-    """Delete a specific monitor (requires ID confirmation)."""
-    if monitor_id != confirm_id:
-        return MonitorResponse(success=False, error="ID confirmation failed")
-    # ... delete logic
-    return MonitorResponse(success=True, monitor_id=monitor_id)
-```
 
 **Priority**: Focus on `GET`-equivalent operations that return data safely.
 

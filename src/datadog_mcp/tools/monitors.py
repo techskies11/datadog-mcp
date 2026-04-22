@@ -258,35 +258,6 @@ def update_monitor(
         return {"success": False, "error": str(e)}
 
 
-def delete_monitor(monitor_id: int, auth: DatadogAuth | None = None) -> dict:
-    """Delete a monitor.
-
-    Args:
-        monitor_id: The numeric ID of the monitor to delete
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Deletion result
-    """
-    if auth is None:
-        auth = DatadogAuth()
-
-    # Use API client directly - no context manager needed
-    api_instance = MonitorsApi(auth.api_client)
-
-    try:
-        api_instance.delete_monitor(monitor_id)
-
-        return {
-            "success": True,
-            "monitor_id": monitor_id,
-            "message": "Monitor deleted successfully",
-        }
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
 def mute_monitor(
     monitor_id: int,
     scope: str | None = None,

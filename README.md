@@ -30,7 +30,6 @@ See [FASTMCP_IMPROVEMENTS.md](FASTMCP_IMPROVEMENTS.md) for details on agent dete
 - **get_dashboard** - Get complete dashboard definitions
 - **create_dashboard** - Create dashboards with widgets, variables, and templates
 - **update_dashboard** - Modify existing dashboards
-- **delete_dashboard** - Remove dashboards
 
 ### 🔬 APM/Traces
 - **search_spans** - Search APM spans by service, operation, tags
@@ -42,7 +41,6 @@ See [FASTMCP_IMPROVEMENTS.md](FASTMCP_IMPROVEMENTS.md) for details on agent dete
 - **get_monitor** - Get monitor details
 - **create_monitor** - Create metric, log, APM, or composite monitors
 - **update_monitor** - Modify monitor configuration
-- **delete_monitor** - Remove monitors
 - **mute_monitor** / **unmute_monitor** - Control alert notifications
 
 ## Installation
