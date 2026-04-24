@@ -1,11 +1,54 @@
 """Dashboard tools for creating and managing Datadog dashboards."""
 
+import json
+from typing import Any, Mapping, cast
+from urllib.parse import quote
+
 from datadog_api_client.v1.api.dashboards_api import DashboardsApi
 from datadog_api_client.v1.model.dashboard import Dashboard
 
 from ..auth import DatadogAuth
 from ..utils.auth import get_api_instance
 from ..utils.response import ResponseBuilder, format_error_response
+
+
+def _dashboard_request_headers(api_client: Any) -> dict[str, str]:
+    """Headers for a dashboard GET, matching the official client (auth + defaults)."""
+    defaults = cast(Mapping[Any, Any], api_client.default_headers)
+    headers: dict[str, str] = {str(k): str(v) for k, v in defaults.items()}
+    for auth_conf in api_client.configuration.auth_settings().values():
+        if auth_conf.get("in") == "header" and auth_conf.get("value") is not None:
+            headers[str(auth_conf["key"])] = str(auth_conf["value"])
+    headers.setdefault("Accept", "application/json")
+    return headers
+
+
+def _get_dashboard_json_dict(api_instance: DashboardsApi, dashboard_id: str) -> dict[str, Any]:
+    """GET /api/v1/dashboard/{id} and return decoded JSON without OpenAPI model trees.
+
+    ``DashboardsApi.get_dashboard`` + ``to_dict()`` can raise ``IndexError`` (``list index
+    out of range``) from ``ModelComposed.get_oneof_instance`` when Datadog returns widget
+    shapes the installed ``datadog-api-client`` does not map onto composed oneOf schemas
+    (common with newer dashboard features). Raw JSON avoids that path entirely.
+    """
+    client = api_instance.api_client
+    safe_id = quote(dashboard_id, safe="")
+    url = f"{client.configuration.host}/api/v1/dashboard/{safe_id}"
+    raw = client.rest_client.request(
+        "GET",
+        url,
+        query_params=[],
+        headers=_dashboard_request_headers(client),
+        post_params=[],
+        body=None,
+        preload_content=True,
+        request_timeout=client.configuration.request_timeout,
+    )
+    decoded: object = json.loads(raw.data.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        msg = "Datadog dashboard API returned non-object JSON"
+        raise TypeError(msg)
+    return cast(dict[str, Any], decoded)
 
 
 def list_dashboards(
@@ -68,6 +111,10 @@ def list_dashboards(
 def get_dashboard(dashboard_id: str, auth: DatadogAuth | None = None) -> dict:
     """Get complete dashboard definition including all widgets and configuration.
 
+    Uses the dashboard JSON endpoint directly so read tools do not depend on the
+    OpenAPI client's deserialization of every widget type (see module doc on
+    ``_get_dashboard_json_dict``).
+
     Args:
         dashboard_id: The unique identifier of the dashboard
         auth: DatadogAuth instance (injected dependency)
@@ -75,16 +122,11 @@ def get_dashboard(dashboard_id: str, auth: DatadogAuth | None = None) -> dict:
     Returns:
         dict: Complete dashboard definition (auto-truncated if too large)
     """
-    api_instance, auth = get_api_instance(DashboardsApi, auth)
+    api_instance, _auth = get_api_instance(DashboardsApi, auth)
 
     try:
-        response = api_instance.get_dashboard(dashboard_id)
-
-        # Convert to dict for easier handling
-        dashboard_dict = response.to_dict() if hasattr(response, "to_dict") else {}
-
+        dashboard_dict = _get_dashboard_json_dict(api_instance, dashboard_id)
         return {"success": True, "dashboard": dashboard_dict}
-
     except Exception as e:
         return {"success": False, "error": str(e)}
 
