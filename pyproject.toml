@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datadog-mcp"
-version = "0.1.0"
-description = "MCP Server for Datadog - Search logs, query metrics, manage dashboards, APM traces, and monitors"
+version = "0.2.0"
+description = "MCP server that connects AI agents to Datadog: search logs, query metrics, manage dashboards, monitors, downtimes, and APM traces"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    { name = "Datadog MCP maintainers" }
 ]
 readme = "README.md"
 requires-python = "<4.0,>=3.10"
 dependencies = [
-    "fastmcp>=3.2.0",
-    "datadog-api-client>=2.30.0",
+    "fastmcp>=3.4.2,<4",
+    "datadog-api-client>=2.57.0",
     "python-dotenv>=1.2.2",
     "pydantic>=2.0.0",
 ]
@@ -23,15 +23,6 @@ datadog-mcp = "datadog_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/datadog_mcp"]
-
-[project.optional-dependencies]
-dev = [
-    "mypy>=1.8.0",
-    "pyright>=1.1.350",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=0.23.0",
-    "pre-commit>=3.5.0",
-]
 
 [tool.mypy]
 python_version = "3.10"
@@ -83,6 +74,16 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["datadog_mcp"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: requires real Datadog credentials (DD_API_KEY/DD_APP_KEY) and makes network calls; skipped by default",
+]
+
+# NOTE: This is the single source of dev dependencies. Do not reintroduce a
+# [project.optional-dependencies].dev table alongside this - having both led
+# to two different mypy/pyright minimums drifting out of sync.
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",

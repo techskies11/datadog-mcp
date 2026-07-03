@@ -6,465 +6,206 @@ alwaysApply: false
 
 # Pydantic for FastMCP
 
-Use Pydantic models for ALL tool inputs and outputs. Pydantic provides runtime validation, better IDE support, and integrates perfectly with FastMCP.
+Use Pydantic models for ALL tool inputs and outputs - never `TypedDict`, never
+`dict[str, object]`. This project has two distinct model families with
+**different** strictness, defined once in `src/datadog_mcp/utils/response.py`
+and reused everywhere. Getting the family right matters more than any single
+`ConfigDict` flag below.
 
-## Why Pydantic Over TypedDict
+## The Two Model Families
+
+### Inbound: `DatadogModel` - tolerant, for parsing Datadog API responses
 
 ```python
-# ❌ BAD - TypedDict has no runtime validation
-from typing import TypedDict
+from datadog_mcp.utils.response import DatadogModel
 
-class SearchResponse(TypedDict):
-    success: bool
-    count: int
-
-def search(query: str) -> SearchResponse:
-    return {"success": True}  # Missing 'count', no error at runtime!
-
-# ✅ GOOD - Pydantic validates at runtime
-from pydantic import BaseModel, Field
-
-class SearchResponse(BaseModel):
-    success: bool
-    count: int
-
-def search(query: str) -> SearchResponse:
-    return SearchResponse(success=True)  # ValidationError: missing 'count'
+class LogEntry(DatadogModel):
+    """A single log entry, flattened from Datadog's {id, type, attributes} envelope."""
+    id: str | None = None
+    message: str | None = None
+    timestamp: str | None = None
 ```
 
-## Basic Pydantic Model Pattern
+`DatadogModel` sets `extra="ignore"`. Datadog can and does add new fields to
+API responses without notice; strict inbound validation would turn every
+such addition into a hard failure for this server. Never override this to
+`extra="forbid"` on an inbound model.
+
+### Outbound: `ToolResponse` / `PaginatedListResponse` - strict, for tool return values
+
+```python
+from datadog_mcp.utils.response import ToolResponse, PaginatedListResponse, finalize_list_response
+
+class GetLogDetailsResponse(ToolResponse):
+    """Response for `get_log_details`."""
+    log: LogEntry | None = None
+
+class SearchLogsResponse(PaginatedListResponse):
+    """Response for `search_logs`."""
+    logs: list[LogEntry] = Field(default_factory=list)
+    next_cursor: str | None = None
+    has_more: bool = False
+```
+
+`ToolResponse` sets `extra="forbid"` and already declares `success: bool = True`
+and `error: str | None = None`. `PaginatedListResponse` additionally declares
+`count`, `truncated`, `warning`, `total_available`. This is data the server
+fully controls - every field must be declared up front, never injected ad-hoc
+at a call site (no `response["extra_debug_field"] = ...`).
+
+Use `PaginatedListResponse` (not plain `ToolResponse`) for any response whose
+main payload is a single named list, then finalize it:
+
+```python
+result = SearchLogsResponse(logs=logs, next_cursor=next_cursor, has_more=has_more)
+return finalize_list_response(result, "logs")  # sets count, truncates if oversized
+```
+
+## No `Success | Error` Union Return Types
+
+**Never** type a tool as `-> SearchLogsResponse | ErrorResponse`. FastMCP
+serializes a `Union` return type's `structuredContent` as `{"result": ...}`
+instead of the flat shape a single model produces - this silently changes the
+wire format for every client depending on the tool's response keys. Instead,
+every response model carries its own `success`/`error` (inherited from
+`ToolResponse`), and a failure is a `success=False` instance of the *same*
+model type:
+
+```python
+# ❌ WRONG - changes structuredContent shape on every failure
+def search_logs(...) -> SearchLogsResponse | ErrorResponse: ...
+
+# ✅ RIGHT - one return type, always
+def search_logs(...) -> SearchLogsResponse: ...
+```
+
+Build the error instance with `format_error_response`, never by hand:
+
+```python
+from datadog_mcp.utils.response import format_error_response
+
+except Exception as e:  # noqa: BLE001
+    return format_error_response(SearchLogsResponse, e, required_scope="logs_read")
+```
+
+`format_error_response` also runs `classify_api_exception`, which turns a raw
+403/429 into an actionable message (missing scope / rate limit) instead of a
+bare exception string.
+
+## `exclude_none` Is Automatic - Don't Re-implement It
+
+Both model families inherit `_ExcludeNoneModel`, which overrides
+`model_serializer` so `None`-valued fields are dropped from **every**
+serialization path (`model_dump`, `model_dump_json`, and FastMCP's
+`structuredContent` via `to_jsonable_python`). Do not call
+`model_dump(exclude_none=True)` manually and do not add per-field
+`exclude=True` for the same purpose - it's already handled at the base class.
+This is what keeps `next_cursor: null` from appearing on a non-paginated
+response.
+
+## Parsing Datadog API Responses
+
+Use `model_validate(obj.to_dict())`, not chains of `hasattr`/`getattr`:
+
+```python
+def _search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
+    response = api_instance.list_logs(body=...)
+    logs = [LogEntry.model_validate(log.to_dict()) for log in (response.data or [])]
+    return finalize_list_response(SearchLogsResponse(logs=logs), "logs")
+```
+
+`.to_dict()` on `datadog-api-client` model objects is sometimes untyped from
+mypy's point of view; where that happens, add a narrowly-scoped
+`# type: ignore[no-untyped-call]` on that exact line rather than loosening
+the model's own typing.
+
+For envelopes that need reshaping before validation (e.g. Datadog's
+`{id, type, attributes}` wrapper), use a `@model_validator(mode="before")`
+on the inbound model instead of pre-processing dicts by hand at every call
+site:
+
+```python
+class LogEntry(DatadogModel):
+    id: str | None = None
+    message: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_datadog_envelope(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("attributes"), dict):
+            return {"id": data.get("id"), **data["attributes"]}
+        return data
+```
+
+## Field Validation and Literals
 
 ```python
 from pydantic import BaseModel, Field
 from typing import Literal
 
-# ✅ Define response models
-class LogEntry(BaseModel):
-    """Individual log entry."""
-    id: str
-    message: str | None = None
-    timestamp: str | None = None
-    status: Literal["info", "warning", "error", "debug"] | None = None
-    service: str | None = None
-    tags: list[str] = Field(default_factory=list)
+class ScheduleDowntimeResponse(ToolResponse):
+    downtime_id: str | None = None
 
-class SearchLogsResponse(BaseModel):
-    """Response from search_logs tool."""
-    success: bool
-    logs: list[LogEntry]
-    count: int
-    next_cursor: str | None = None
-    has_more: bool = False
-
-# ✅ Use in FastMCP tool
-@mcp.tool()
-def search_logs(
-    query: str,
-    from_time: str,
-    to_time: str
-) -> SearchLogsResponse:
-    """Search logs with Pydantic validation."""
-    # ... implementation
-    return SearchLogsResponse(
-        success=True,
-        logs=[...],
-        count=10
-    )
+def schedule_downtime(
+    scope: str,
+    aggregation: Literal["count", "sum", "avg", "min", "max"] = "count",
+) -> ScheduleDowntimeResponse:
+    ...
 ```
 
-## Field Validation
+Prefer `Literal[...]` over a bare `str` for any parameter with a fixed,
+enumerable set of valid values - it shows up directly in the generated JSON
+schema and removes the need for a runtime `cast`/lookup-table `KeyError`
+guard.
 
-Use Pydantic's `Field` for validation and metadata:
+## Generic Helpers - `TypeVar`, Not PEP 695 Generics
+
+This project targets `requires-python = ">=3.10"`. PEP 695 (`class Foo[T]:`,
+`def f[T](...)`) is 3.12+ only - use `typing.TypeVar` instead:
 
 ```python
-from pydantic import BaseModel, Field, field_validator
+# ✅ RIGHT - works on 3.10
+from typing import TypeVar
 
-class CreateMonitorRequest(BaseModel):
-    """Request to create a monitor."""
-    name: str = Field(..., min_length=1, max_length=200, description="Monitor name")
-    query: str = Field(..., min_length=1, description="Alert query")
-    message: str = Field(..., description="Notification message")
-    priority: int = Field(default=3, ge=1, le=5, description="Priority 1-5")
-    tags: list[str] = Field(default_factory=list, max_length=50)
+ResponseT = TypeVar("ResponseT", bound="PaginatedListResponse")
 
-    @field_validator('query')
-    @classmethod
-    def validate_query(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Query cannot be empty")
-        return v.strip()
+def finalize_list_response(response: ResponseT, list_field: str) -> ResponseT:
+    ...
 
-# ✅ Use in tool
-@mcp.tool()
-def create_monitor(request: CreateMonitorRequest) -> MonitorResponse:
-    """Create monitor with validated input."""
-    # Pydantic has already validated all fields!
-    auth = get_auth_instance()
-    return _create_monitor(request, auth=auth)
+# ❌ WRONG - requires Python 3.12+
+def finalize_list_response[T: PaginatedListResponse](response: T, list_field: str) -> T:
+    ...
 ```
 
-## Config Class
+## Pre-flight Validation for Loosely-Typed Inputs
 
-Configure Pydantic behavior:
+Some tool inputs (e.g. dashboard `widgets: list[dict[str, Any]]`) must stay
+`dict`-shaped because Datadog has dozens of variants and modeling all of them
+isn't worth the maintenance cost. For the handful of common cases worth
+catching before an API round-trip, define a narrow Pydantic model with
+`ConfigDict(extra="allow")` and validate just those:
 
 ```python
-from pydantic import BaseModel, ConfigDict
-
-class LogEntry(BaseModel):
-    """Log entry with strict configuration."""
-    model_config = ConfigDict(
-        strict=True,           # Strict type checking
-        frozen=False,          # Mutable by default
-        extra='forbid',        # Forbid extra fields
-        validate_assignment=True,  # Validate on assignment
-        str_strip_whitespace=True,  # Auto-strip strings
-    )
-
-    id: str
-    message: str | None = None
-    timestamp: str | None = None
+class TimeseriesWidgetDefinition(BaseModel):
+    """Required shape of a `timeseries` widget's `definition` - extra fields allowed."""
+    model_config = ConfigDict(extra="allow")
+    type: Literal["timeseries"]
+    requests: list[_WidgetRequestSpec] = Field(min_length=1)
 ```
 
-## Common Response Patterns
-
-### Success/Error Response
-
-```python
-from pydantic import BaseModel
-
-class BaseResponse(BaseModel):
-    """Base response with success flag."""
-    success: bool
-
-class ErrorResponse(BaseResponse):
-    """Error response."""
-    success: bool = False
-    error: str
-
-class DataResponse(BaseResponse):
-    """Successful response with data."""
-    success: bool = True
-    count: int
-
-class SearchLogsResponse(DataResponse):
-    """Search logs response."""
-    logs: list[LogEntry]
-    next_cursor: str | None = None
-    has_more: bool = False
-```
-
-### Paginated Response
-
-```python
-from pydantic import BaseModel, Field
-
-class PaginatedResponse[T](BaseModel):
-    """Generic paginated response."""
-    success: bool = True
-    items: list[T]
-    count: int = Field(ge=0)
-    page_size: int = Field(ge=1, le=50)
-    next_cursor: str | None = None
-    has_more: bool = False
-
-# ✅ Use with specific type
-class SearchLogsResponse(PaginatedResponse[LogEntry]):
-    """Paginated log search results."""
-    pass
-```
-
-## Converting API Responses
-
-Use Pydantic to parse external API responses:
-
-```python
-from pydantic import BaseModel
-from datadog_api_client.v2.api.logs_api import LogsApi
-
-class LogEntry(BaseModel):
-    """Validated log entry."""
-    id: str
-    message: str | None = None
-    timestamp: str | None = None
-
-def search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
-    """Search logs with Pydantic validation."""
-    api = LogsApi(auth.api_client)
-    response = api.list_logs(...)
-
-    # ✅ Parse and validate API response
-    logs: list[LogEntry] = []
-    if hasattr(response, 'data') and response.data:
-        for log in response.data:
-            # Pydantic validates each entry
-            logs.append(LogEntry(
-                id=log.id if hasattr(log, 'id') else "",
-                message=log.attributes.message if hasattr(log.attributes, 'message') else None,
-                timestamp=log.attributes.timestamp.isoformat() if hasattr(log.attributes, 'timestamp') else None
-            ))
-
-    return SearchLogsResponse(
-        success=True,
-        logs=logs,
-        count=len(logs)
-    )
-```
-
-## Alias and Serialization
-
-Handle field name differences:
-
-```python
-from pydantic import BaseModel, Field
-
-class LogEntry(BaseModel):
-    """Log entry with field aliases."""
-    id: str
-    message: str | None = None
-    # Map @timestamp from Datadog to timestamp field
-    timestamp: str | None = Field(None, alias="@timestamp")
-    # Map @session_id to session_id
-    session_id: str | None = Field(None, alias="@session_id")
-
-# ✅ Parse with aliases
-log = LogEntry.model_validate({
-    "id": "abc123",
-    "@timestamp": "2024-01-28T10:00:00Z",
-    "@session_id": "sess_xyz"
-})
-
-# ✅ Serialize with aliases
-log.model_dump(by_alias=True)
-# {"id": "abc123", "@timestamp": "2024-01-28T10:00:00Z", "@session_id": "sess_xyz"}
-```
-
-## Optional Fields
-
-```python
-from pydantic import BaseModel
-
-class SearchResponse(BaseModel):
-    """Response with optional fields."""
-    success: bool
-    count: int
-    # Optional fields with None default
-    next_cursor: str | None = None
-    has_more: bool = False  # Optional with default value
-    error: str | None = None  # Only present on error
-```
-
-## Nested Models
-
-```python
-from pydantic import BaseModel
-
-class LogAttributes(BaseModel):
-    """Log attributes."""
-    status: str
-    service: str | None = None
-    environment: str | None = None
-
-class LogEntry(BaseModel):
-    """Log entry with nested attributes."""
-    id: str
-    message: str
-    attributes: LogAttributes  # Nested model
-
-# ✅ Pydantic validates nested structure
-log = LogEntry(
-    id="123",
-    message="Error occurred",
-    attributes=LogAttributes(status="error", service="api")
-)
-```
-
-## Generic Models with TypeVar
-
-```python
-from pydantic import BaseModel
-from typing import TypeVar, Generic
-
-T = TypeVar('T')
-
-class ApiResponse(BaseModel, Generic[T]):
-    """Generic API response."""
-    success: bool
-    data: T
-    error: str | None = None
-
-# ✅ Use with specific types
-class UserData(BaseModel):
-    id: str
-    name: str
-
-def get_user(user_id: str) -> ApiResponse[UserData]:
-    return ApiResponse(
-        success=True,
-        data=UserData(id=user_id, name="John")
-    )
-```
-
-## FastMCP Integration
-
-FastMCP automatically handles Pydantic models:
-
-```python
-from fastmcp import FastMCP
-from pydantic import BaseModel
-
-mcp = FastMCP("My Server")
-
-class SearchRequest(BaseModel):
-    """Search request parameters."""
-    query: str
-    limit: int = 10
-
-class SearchResponse(BaseModel):
-    """Search results."""
-    results: list[str]
-    count: int
-
-# ✅ FastMCP auto-generates JSON schema from Pydantic
-@mcp.tool()
-def search(request: SearchRequest) -> SearchResponse:
-    """FastMCP validates input and output automatically."""
-    results = perform_search(request.query, request.limit)
-    return SearchResponse(results=results, count=len(results))
-```
-
-## Error Handling
-
-```python
-from pydantic import BaseModel, ValidationError
-
-class SearchResponse(BaseModel):
-    success: bool
-    logs: list[LogEntry]
-    count: int
-
-def search_logs(query: str) -> SearchResponse:
-    try:
-        # ... get logs from API
-        return SearchResponse(
-            success=True,
-            logs=logs,
-            count=len(logs)
-        )
-    except ValidationError as e:
-        # Pydantic validation failed - this is a code bug!
-        raise ValueError(f"Response validation failed: {e}")
-    except Exception as e:
-        # API error - return error response
-        return SearchResponse(
-            success=False,
-            logs=[],
-            count=0,
-            error=str(e)
-        )
-```
-
-## Model Inheritance
-
-```python
-from pydantic import BaseModel
-
-class BaseToolResponse(BaseModel):
-    """Base response for all tools."""
-    success: bool
-
-class ErrorResponse(BaseToolResponse):
-    """Error response."""
-    success: bool = False
-    error: str
-
-class SearchLogsResponse(BaseToolResponse):
-    """Search logs specific response."""
-    success: bool = True
-    logs: list[LogEntry]
-    count: int
-```
-
-## JSON Schema Generation
-
-Pydantic automatically generates JSON schemas for FastMCP:
-
-```python
-from pydantic import BaseModel, Field
-
-class CreateDashboardRequest(BaseModel):
-    """Request to create dashboard."""
-    title: str = Field(..., description="Dashboard title", examples=["API Performance"])
-    layout_type: Literal["ordered", "free"] = Field(..., description="Layout type")
-    widgets: list[dict[str, object]] = Field(default_factory=list, description="Widget definitions")
-
-# ✅ FastMCP uses this schema to validate calls
-@mcp.tool()
-def create_dashboard(request: CreateDashboardRequest) -> DashboardResponse:
-    """Create dashboard - schema auto-generated from Pydantic."""
-    pass
-
-# Get JSON schema
-print(CreateDashboardRequest.model_json_schema())
-```
-
-## Best Practices Summary
-
-### ✅ DO
-- Use Pydantic `BaseModel` for all tool inputs and outputs
-- Use `Field()` for validation constraints and descriptions
-- Define strict models with `ConfigDict(extra='forbid')`
-- Use `field_validator` for custom validation
-- Leverage Pydantic's built-in types (HttpUrl, EmailStr, etc.)
-
-### ❌ DON'T
-- Don't use `dict[str, object]` - use Pydantic models
-- Don't use TypedDict - use Pydantic instead
-- Don't skip validation - let Pydantic catch errors
-- Don't use `Any` - define proper types
-- Don't ignore ValidationError - it indicates a bug
-
-## Migration from TypedDict
-
-```python
-# ❌ BEFORE - TypedDict (no runtime validation)
-from typing import TypedDict
-
-class SearchResponse(TypedDict):
-    success: bool
-    logs: list[dict[str, object]]  # Untyped!
-    count: int
-
-def search(query: str) -> SearchResponse:
-    return {"success": True, "logs": [], "count": 0}
-
-# ✅ AFTER - Pydantic (with validation)
-from pydantic import BaseModel
-
-class LogEntry(BaseModel):
-    id: str
-    message: str | None = None
-
-class SearchResponse(BaseModel):
-    success: bool
-    logs: list[LogEntry]  # Fully typed!
-    count: int
-
-def search(query: str) -> SearchResponse:
-    return SearchResponse(success=True, logs=[], count=0)
-```
+Anything not in the known-types map is passed straight through unvalidated -
+don't reject an input just because this server doesn't model its shape yet.
 
 ## Checklist
 
-- [ ] All tool return types are Pydantic models
-- [ ] All complex input types are Pydantic models
-- [ ] No `dict[str, object]` anywhere
-- [ ] No TypedDict (use Pydantic instead)
-- [ ] Field validation with `Field()` where needed
-- [ ] Custom validators for business logic
-- [ ] ConfigDict set appropriately
-- [ ] Models have docstrings
-- [ ] ValidationError handled properly
-
----
-
-**Pydantic provides type safety at runtime, not just at type-check time. Use it for everything!**
+- [ ] Inbound models (parsed from Datadog) extend `DatadogModel` (`extra="ignore"`)
+- [ ] Outbound models (tool returns) extend `ToolResponse` or `PaginatedListResponse` (`extra="forbid"`)
+- [ ] No tool has a `Model | ErrorModel` union return type
+- [ ] Errors built via `format_error_response(ResponseCls, e, required_scope=...)`, not by hand
+- [ ] List-payload responses use `PaginatedListResponse` + `finalize_list_response`
+- [ ] No manual `exclude_none=True` calls - it's automatic via `_ExcludeNoneModel`
+- [ ] `model_validate(obj.to_dict())` instead of `hasattr`/`getattr` chains
+- [ ] `Literal[...]` for fixed-value parameters instead of bare `str` + `cast`
+- [ ] `TypeVar`, not PEP 695 generics (`class Foo[T]`)
+- [ ] No `TypedDict`, no `dict[str, object]` as a response type

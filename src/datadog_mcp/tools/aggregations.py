@@ -1,47 +1,110 @@
 """Aggregation tools for efficient counting and summarizing without fetching raw data."""
 
-from typing import Literal
+from __future__ import annotations
+
+from typing import Any, Literal
 
 from datadog_api_client.v2.api.logs_api import LogsApi
 from datadog_api_client.v2.model.logs_aggregate_request import LogsAggregateRequest
 from datadog_api_client.v2.model.logs_aggregation_function import LogsAggregationFunction
 from datadog_api_client.v2.model.logs_compute import LogsCompute
+from datadog_api_client.v2.model.logs_compute_type import LogsComputeType
 from datadog_api_client.v2.model.logs_group_by import LogsGroupBy
 from datadog_api_client.v2.model.logs_query_filter import LogsQueryFilter
+from fastmcp import FastMCP
+from pydantic import Field
 
-from ..auth import DatadogAuth
+from ..auth import DatadogAuth, get_auth_instance
+from ..utils.annotations import READ_ONLY
 from ..utils.auth import get_api_instance
+from ..utils.response import (
+    DatadogModel,
+    PaginatedListResponse,
+    ToolResponse,
+    finalize_list_response,
+    format_error_response,
+)
+
+AggregationName = Literal[
+    "count", "cardinality", "pc75", "pc90", "pc95", "pc99", "sum", "min", "max", "avg"
+]
+
+_AGGREGATION_MAP: dict[AggregationName, LogsAggregationFunction] = {
+    "count": LogsAggregationFunction.COUNT,
+    "cardinality": LogsAggregationFunction.CARDINALITY,
+    "pc75": LogsAggregationFunction.PERCENTILE_75,
+    "pc90": LogsAggregationFunction.PERCENTILE_90,
+    "pc95": LogsAggregationFunction.PERCENTILE_95,
+    "pc99": LogsAggregationFunction.PERCENTILE_99,
+    "sum": LogsAggregationFunction.SUM,
+    "min": LogsAggregationFunction.MIN,
+    "max": LogsAggregationFunction.MAX,
+    "avg": LogsAggregationFunction.MEDIAN,  # closest available to a true average
+}
 
 
-def count_logs(
+class CountLogsResponse(ToolResponse):
+    """Response for `count_logs`."""
+
+    count: int = 0
+    query: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+
+
+class CountUniqueValuesResponse(ToolResponse):
+    """Response for `count_unique_values`."""
+
+    unique_count: int = 0
+    field: str | None = None
+    query: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+
+
+class LogTimeseriesPoint(DatadogModel):
+    """A single `{time, value}` point within a bucket's timeseries."""
+
+    time: str | None = None
+    value: float | None = None
+
+
+class LogAggregationBucket(DatadogModel):
+    """One group's result from `aggregate_logs_by_field`.
+
+    Exactly one of `value` (scalar aggregation) or `timeseries` (when
+    `interval` was requested) is populated, never both - this keeps the
+    field fixed regardless of which aggregation function was requested,
+    instead of the aggregation name becoming a dynamic dict key.
+    """
+
+    key: str | None = None
+    value: float | None = None
+    timeseries: list[LogTimeseriesPoint] = Field(default_factory=list)
+
+
+class AggregateLogsResponse(PaginatedListResponse):
+    """Response for `aggregate_logs_by_field`."""
+
+    buckets: list[LogAggregationBucket] = Field(default_factory=list)
+    group_by: str | None = None
+    aggregation: str | None = None
+    interval: str | None = None
+    query: str | None = None
+    from_time: str | None = None
+    to_time: str | None = None
+
+
+def _count_logs(
     query: str,
     from_time: str,
     to_time: str,
-    indexes: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict:
-    """Count logs matching a query without fetching all data.
-
-    This is much faster and lighter than search_logs when you only need a count.
-
-    Args:
-        query: Search query using Datadog log search syntax (e.g., "status:error service:api")
-        from_time: Start time (ISO 8601, date math like "now-1h", or timestamp ms)
-        to_time: End time (ISO 8601, date math like "now", or timestamp ms)
-        indexes: Optional list of index names to search (e.g., ["main", "retention"])
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: {"success": bool, "count": int, "query": str}
-
-    Example:
-        count_logs("status:error env:prod", "now-1h", "now")
-        -> {"success": true, "count": 1234, "query": "status:error env:prod"}
-    """
-    api_instance, auth = get_api_instance(LogsApi, auth)
+    indexes: list[str] | None,
+    auth: DatadogAuth,
+) -> CountLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
 
     try:
-        # Build aggregate request with count computation
         body = LogsAggregateRequest(
             filter=LogsQueryFilter(
                 query=query,
@@ -50,65 +113,28 @@ def count_logs(
             ),
             compute=[LogsCompute(aggregation=LogsAggregationFunction.COUNT, metric="*")],
         )
-
         response = api_instance.aggregate_logs(body=body)
+        count = _extract_scalar(response, key="c0")
 
-        # Extract count from response
-        count = 0
-        if hasattr(response, "data") and response.data:
-            if hasattr(response.data, "buckets") and response.data.buckets:
-                # If there are buckets, sum all counts
-                for bucket in response.data.buckets:
-                    if hasattr(bucket, "computes") and bucket.computes:
-                        count += bucket.computes.get("c0", 0)
-            elif hasattr(response.data, "attributes") and hasattr(
-                response.data.attributes, "total"
-            ):
-                # If no buckets, use total
-                count = (
-                    response.data.attributes.total.count
-                    if hasattr(response.data.attributes.total, "count")
-                    else 0
-                )
+        return CountLogsResponse(
+            count=int(count), query=query, from_time=from_time, to_time=to_time
+        )
 
-        return {"success": True, "count": count, "query": query, "from": from_time, "to": to_time}
-
-    except Exception as e:
-        return {"success": False, "error": str(e), "count": 0}
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(CountLogsResponse, e, required_scope="logs_read")
 
 
-def count_unique(
+def _count_unique(
     query: str,
     from_time: str,
     to_time: str,
     field: str,
-    indexes: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict:
-    """Count unique values of a field (cardinality) without fetching all data.
-
-    Perfect for counting unique users, sessions, IPs, etc. Much more efficient than
-    fetching all logs and counting unique values locally.
-
-    Args:
-        query: Search query using Datadog log search syntax
-        from_time: Start time (ISO 8601, date math like "now-1h", or timestamp ms)
-        to_time: End time (ISO 8601, date math like "now", or timestamp ms)
-        field: Field to count unique values (e.g., "@session_id", "@user.id", "host")
-        indexes: Optional list of index names to search
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: {"success": bool, "unique_count": int, "field": str, "query": str}
-
-    Example:
-        count_unique("service:omni-channel airline:aeromexico", "now-1d", "now", "@session_id")
-        -> {"success": true, "unique_count": 150, "field": "@session_id"}
-    """
-    api_instance, auth = get_api_instance(LogsApi, auth)
+    indexes: list[str] | None,
+    auth: DatadogAuth,
+) -> CountUniqueValuesResponse:
+    api_instance = get_api_instance(LogsApi, auth)
 
     try:
-        # Build aggregate request with cardinality computation
         body = LogsAggregateRequest(
             filter=LogsQueryFilter(
                 query=query,
@@ -117,137 +143,212 @@ def count_unique(
             ),
             compute=[LogsCompute(aggregation=LogsAggregationFunction.CARDINALITY, metric=field)],
         )
-
         response = api_instance.aggregate_logs(body=body)
+        unique_count = _extract_scalar(response, key="c0")
 
-        # Extract cardinality from response
-        unique_count = 0
-        if hasattr(response, "data") and response.data:
-            if hasattr(response.data, "buckets") and response.data.buckets:
-                # If there are buckets, sum all cardinalities
-                for bucket in response.data.buckets:
-                    if hasattr(bucket, "computes") and bucket.computes:
-                        unique_count += bucket.computes.get("c0", 0)
-            elif hasattr(response.data, "attributes") and hasattr(
-                response.data.attributes, "total"
-            ):
-                # If no buckets, use total
-                if hasattr(response.data.attributes.total, "aggregate_value"):
-                    unique_count = response.data.attributes.total.aggregate_value
+        return CountUniqueValuesResponse(
+            unique_count=int(unique_count),
+            field=field,
+            query=query,
+            from_time=from_time,
+            to_time=to_time,
+        )
 
-        return {
-            "success": True,
-            "unique_count": unique_count,
-            "field": field,
-            "query": query,
-            "from": from_time,
-            "to": to_time,
-        }
-
-    except Exception as e:
-        return {"success": False, "error": str(e), "unique_count": 0}
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(CountUniqueValuesResponse, e, required_scope="logs_read")
 
 
-def aggregate_logs(
+def _extract_scalar(response: Any, key: str) -> float:
+    """Sum a scalar compute value across all buckets (or read the single total)."""
+    data = getattr(response, "data", None)
+    if data is None:
+        return 0.0
+
+    buckets = getattr(data, "buckets", None)
+    if buckets:
+        return sum(float((bucket.computes or {}).get(key, 0) or 0) for bucket in buckets)
+
+    attributes = getattr(data, "attributes", None)
+    total = getattr(attributes, "total", None) if attributes else None
+    if total is not None:
+        return float(getattr(total, "count", None) or getattr(total, "aggregate_value", None) or 0)
+
+    return 0.0
+
+
+def _aggregate_logs_by_field(
     query: str,
     from_time: str,
     to_time: str,
     group_by: str,
-    aggregation: Literal[
-        "count", "cardinality", "pc75", "pc90", "pc95", "pc99", "sum", "min", "max", "avg"
-    ] = "count",
-    metric: str | None = None,
-    limit: int = 10,
-    indexes: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict:
-    """Aggregate logs by a field with various aggregation functions.
-
-    This allows you to group and aggregate logs efficiently without fetching raw data.
-    Perfect for dashboards, charts, and analytics.
-
-    Args:
-        query: Search query using Datadog log search syntax
-        from_time: Start time (ISO 8601, date math like "now-1h", or timestamp ms)
-        to_time: End time (ISO 8601, date math like "now", or timestamp ms)
-        group_by: Field to group by (e.g., "@airline_name", "service", "status")
-        aggregation: Aggregation function - count, cardinality, pc75, pc90, pc95, pc99, sum, min, max, avg
-        metric: Metric field for aggregations other than count (e.g., "@duration" for avg)
-        limit: Maximum number of groups to return (default: 10)
-        indexes: Optional list of index names to search
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: {"success": bool, "buckets": [{"key": str, "value": number}, ...], "total": int}
-
-    Example:
-        aggregate_logs("service:omni-channel", "now-1d", "now", "@airline_name", "count")
-        -> {"success": true, "buckets": [{"key": "aeromexico", "count": 50}, {"key": "volaris", "count": 30}]}
-    """
-    api_instance, auth = get_api_instance(LogsApi, auth)
+    aggregation: AggregationName,
+    metric: str | None,
+    limit: int,
+    indexes: list[str] | None,
+    interval: str | None,
+    auth: DatadogAuth,
+) -> AggregateLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
 
     try:
-        # Map string aggregation to enum
-        agg_map = {
-            "count": LogsAggregationFunction.COUNT,
-            "cardinality": LogsAggregationFunction.CARDINALITY,
-            "pc75": LogsAggregationFunction.PERCENTILE_75,
-            "pc90": LogsAggregationFunction.PERCENTILE_90,
-            "pc95": LogsAggregationFunction.PERCENTILE_95,
-            "pc99": LogsAggregationFunction.PERCENTILE_99,
-            "sum": LogsAggregationFunction.SUM,
-            "min": LogsAggregationFunction.MIN,
-            "max": LogsAggregationFunction.MAX,
-            "avg": LogsAggregationFunction.MEDIAN,  # Using median as closest to avg
+        compute_kwargs: dict[str, Any] = {
+            "aggregation": _AGGREGATION_MAP[aggregation],
+            "metric": metric or "*",
         }
+        if interval:
+            compute_kwargs["type"] = LogsComputeType.TIMESERIES
+            compute_kwargs["interval"] = interval
 
-        agg_function = agg_map.get(aggregation, LogsAggregationFunction.COUNT)
-        compute_metric = metric if metric else "*"
-
-        # Build aggregate request with grouping
         body = LogsAggregateRequest(
             filter=LogsQueryFilter(
                 query=query,
                 **{"from": from_time, "to": to_time},  # type: ignore[arg-type]
                 indexes=indexes or ["*"],
             ),
-            compute=[LogsCompute(aggregation=agg_function, metric=compute_metric)],
+            compute=[LogsCompute(**compute_kwargs)],
             group_by=[LogsGroupBy(facet=group_by, limit=limit)],
         )
-
         response = api_instance.aggregate_logs(body=body)
 
-        # Extract buckets from response
-        buckets = []
-        total = 0
+        buckets: list[LogAggregationBucket] = []
+        raw_buckets = response.data.buckets if response.data and response.data.buckets else []
+        for bucket in raw_buckets:
+            key = (bucket.by or {}).get(group_by, "unknown") if bucket.by else "unknown"
+            raw_value = (bucket.computes or {}).get("c0")
 
-        if hasattr(response, "data") and response.data:
-            if hasattr(response.data, "buckets") and response.data.buckets:
-                for bucket in response.data.buckets:
-                    bucket_entry = {}
+            if interval and isinstance(raw_value, list):
+                points = [
+                    LogTimeseriesPoint.model_validate(p.to_dict() if hasattr(p, "to_dict") else p)
+                    for p in raw_value
+                ]
+                buckets.append(LogAggregationBucket(key=key, timeseries=points))
+            else:
+                buckets.append(LogAggregationBucket(key=key, value=float(raw_value or 0)))
 
-                    # Extract group key
-                    if hasattr(bucket, "by") and bucket.by:
-                        bucket_entry["key"] = bucket.by.get(group_by, "unknown")
+        result = AggregateLogsResponse(
+            buckets=buckets,
+            group_by=group_by,
+            aggregation=aggregation,
+            interval=interval,
+            query=query,
+            from_time=from_time,
+            to_time=to_time,
+        )
+        return finalize_list_response(result, "buckets")
 
-                    # Extract computed value
-                    if hasattr(bucket, "computes") and bucket.computes:
-                        value = bucket.computes.get("c0", 0)
-                        bucket_entry[aggregation] = value
-                        total += value if aggregation == "count" else 1
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(AggregateLogsResponse, e, required_scope="logs_read")
 
-                    buckets.append(bucket_entry)
 
-        return {
-            "success": True,
-            "buckets": buckets,
-            "total_buckets": len(buckets),
-            "group_by": group_by,
-            "aggregation": aggregation,
-            "query": query,
-            "from": from_time,
-            "to": to_time,
-        }
+def register_aggregation_tools(mcp: FastMCP) -> None:
+    """Register `count_logs`, `count_unique_values`, and `aggregate_logs_by_field` on `mcp`."""
 
-    except Exception as e:
-        return {"success": False, "error": str(e), "buckets": []}
+    @mcp.tool(annotations=READ_ONLY)
+    def count_logs(
+        query: str, from_time: str, to_time: str, indexes: list[str] | None = None
+    ) -> CountLogsResponse:
+        """Count logs matching a query WITHOUT fetching all data (fast & lightweight).
+
+        PREFERRED for counting events - much faster than search_logs, which
+        should never be used just to count results.
+
+        Use this when:
+        - "How many errors happened?"
+        - "Count logs for a service"
+        - Need a number, not log content
+
+        Examples:
+            count_logs("status:error", "now-1h", "now") -> {"count": 45, ...}
+
+        Args:
+            query: Search query using Datadog log search syntax (e.g. "status:error service:api")
+            from_time: Start time - ISO 8601, relative date math (e.g. "now-1h"), or a
+                millisecond timestamp
+            to_time: End time - same accepted formats as from_time
+            indexes: Optional list of index names to search (e.g. ["main", "retention"])
+        """
+        return _count_logs(query, from_time, to_time, indexes, get_auth_instance())
+
+    @mcp.tool(annotations=READ_ONLY)
+    def count_unique_values(
+        query: str, from_time: str, to_time: str, field: str, indexes: list[str] | None = None
+    ) -> CountUniqueValuesResponse:
+        """Count UNIQUE values of a field (distinct count / cardinality).
+
+        PERFECT for counting unique sessions, users, IPs, etc. Much more
+        efficient than fetching all logs with search_logs and counting
+        distinct values client-side.
+
+        Use this when:
+        - "How many unique users/sessions?"
+        - "Count distinct values"
+        - "How many different X?"
+
+        Examples:
+            count_unique_values("service:api", "now-1d", "now", "@session_id")
+            -> {"unique_count": 150, ...}
+
+        Args:
+            query: Search query using Datadog log search syntax
+            from_time: Start time - ISO 8601, relative date math (e.g. "now-1h"), or a
+                millisecond timestamp
+            to_time: End time - same accepted formats as from_time
+            field: Field to count unique values of (e.g. "@session_id", "@user.id", "host")
+            indexes: Optional list of index names to search
+        """
+        return _count_unique(query, from_time, to_time, field, indexes, get_auth_instance())
+
+    @mcp.tool(annotations=READ_ONLY)
+    def aggregate_logs_by_field(
+        query: str,
+        from_time: str,
+        to_time: str,
+        group_by: str,
+        aggregation: AggregationName = "count",
+        metric: str | None = None,
+        limit: int = 10,
+        indexes: list[str] | None = None,
+        interval: str | None = None,
+    ) -> AggregateLogsResponse:
+        """Aggregate and group logs by a field with statistics (fast, no raw data transfer).
+
+        PERFECT for analytics, charts, and dashboards. Set `interval` to get a
+        timeseries per group instead of a single scalar per group - this
+        covers timeseries use cases without needing a separate tool.
+
+        Use this when:
+        - "Group errors by service"
+        - "Top 10 services by request count"
+        - "Average duration per endpoint, per hour" (set interval="1h")
+
+        Examples:
+            aggregate_logs_by_field("service:api", "now-1d", "now", "status", "count")
+            -> top statuses with counts
+            aggregate_logs_by_field("service:api", "now-1d", "now", "status", "count", interval="1h")
+            -> counts per status, bucketed hourly
+
+        Args:
+            query: Search query using Datadog log search syntax
+            from_time: Start time - ISO 8601, relative date math (e.g. "now-1h"), or a
+                millisecond timestamp
+            to_time: End time - same accepted formats as from_time
+            group_by: Field to group by (e.g. "@airline_name", "service", "status")
+            aggregation: Aggregation function to apply within each group
+            metric: Metric field for aggregations other than count (e.g. "@duration" for avg)
+            limit: Maximum number of groups to return (default: 10)
+            indexes: Optional list of index names to search
+            interval: If set (e.g. "5m", "1h", "1d"), returns a timeseries per group
+                instead of a single scalar per group
+        """
+        return _aggregate_logs_by_field(
+            query,
+            from_time,
+            to_time,
+            group_by,
+            aggregation,
+            metric,
+            limit,
+            indexes,
+            interval,
+            get_auth_instance(),
+        )

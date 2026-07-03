@@ -393,7 +393,7 @@ wheels = [
 
 [[package]]
 name = "datadog-api-client"
-version = "2.56.0"
+version = "2.57.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -401,29 +401,20 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/0b/c1031bbb533cdd88f48e3da36ba388c65cf1f34bde254c30c20b6eb32ee5/datadog_api_client-2.56.0.tar.gz", hash = "sha256:bb4f442af584874a14684ca05fb171c83ba17df0433f0d2ab4db94ca8659d1c3", size = 5758709, upload-time = "2026-06-17T19:45:19.079Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/37/439465e0af67564e36c52c9f22a1edfd0c2ba04b8ded8c859aebf9dd0e36/datadog_api_client-2.57.0.tar.gz", hash = "sha256:0fb93916b90664ef6bd87b9cb5d551aa8432f604b039d4ec1cb73590d8b67085", size = 5881628, upload-time = "2026-06-30T13:51:58.031Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/96/fca320a98f63a5871234b84f2725780759c156a5a205263379d62e6e60d5/datadog_api_client-2.56.0-py3-none-any.whl", hash = "sha256:e3e5d738730b5fd1e07445350dd42dd08b8b74ee81f36cbfc10c04143e2f69bd", size = 7874383, upload-time = "2026-06-17T19:45:16.411Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/cc/d0e97c7be03b5727741cda04fe1b41b88dde78acf7e67a970eddb7d317b6/datadog_api_client-2.57.0-py3-none-any.whl", hash = "sha256:d0a7edf22db58a69dde6591be80776e9cd881ea73dff012e3dc94687fefc3886", size = 8073029, upload-time = "2026-06-30T13:51:54.742Z" },
 ]
 
 [[package]]
 name = "datadog-mcp"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "datadog-api-client" },
     { name = "fastmcp" },
     { name = "pydantic" },
     { name = "python-dotenv" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
 ]
 
 [package.dev-dependencies]
@@ -438,17 +429,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datadog-api-client", specifier = ">=2.30.0" },
-    { name = "fastmcp", specifier = ">=3.2.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5.0" },
+    { name = "datadog-api-client", specifier = ">=2.57.0" },
+    { name = "fastmcp", specifier = ">=3.4.2,<4" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.350" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [

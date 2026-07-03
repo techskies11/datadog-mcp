@@ -4,233 +4,177 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Cursor IDE                              │
-│                                                                 │
-│  User: "Search for errors in API service from last hour"       │
-│                                                                 │
-│                            ↓                                    │
-│                                                                 │
-│                      AI Agent                                   │
-│                                                                 │
-│  Decides to use: search_logs tool                              │
-│                                                                 │
+│                          Cursor IDE                              │
+│  User: "What monitors are alerting in prod right now?"           │
+│                              ↓                                   │
+│                        AI Agent                                  │
+│  Decides to use: list_all_monitors(group_states="alert", ...)    │
 └─────────────────────────────────────────────────────────────────┘
-                             ↓
-                    MCP Protocol (stdio)
-                             ↓
+                               ↓
+                   MCP Protocol over stdio (FastMCP)
+                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│                  Datadog MCP Server (Python)                    │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │ server.py - MCP Server Entry Point                        │ │
-│  │  • Registers 20 tools                                     │ │
-│  │  • Routes tool calls to appropriate handlers              │ │
-│  │  • Returns formatted JSON responses                       │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│                             ↓                                   │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │ auth.py - Authentication Manager                          │ │
-│  │  • Loads DD_API_KEY, DD_APP_KEY, DD_SITE                 │ │
-│  │  • Configures Datadog API client                         │ │
-│  │  • Manages regional endpoints                            │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│                             ↓                                   │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │ tools/ - Tool Implementations                             │ │
-│  │                                                           │ │
-│  │  logs.py        → search_logs, get_log_details           │ │
-│  │  metrics.py     → query_metrics, list_metrics, submit    │ │
-│  │  dashboards.py  → CRUD operations for dashboards         │ │
-│  │  apm.py         → search_spans, get_trace, list_services │ │
-│  │  monitors.py    → CRUD + mute/unmute for monitors        │ │
-│  │                                                           │ │
-│  └───────────────────────────────────────────────────────────┘ │
+│                 Datadog MCP Server (Python)                      │
+│                                                                   │
+│  server.py — composition only                                    │
+│    • FastMCP("Datadog Integration") instance                     │
+│    • register_<domain>_tools(mcp) for each domain module          │
+│    • @mcp.resource / @mcp.prompt definitions                     │
+│                              ↓                                   │
+│  auth.py — DatadogAuth singleton                                 │
+│    • get_auth_instance() reads DD_API_KEY / DD_APP_KEY / DD_SITE │
+│    • builds one datadog_api_client.Configuration + ApiClient     │
+│                              ↓                                   │
+│  tools/<domain>.py — one module per Datadog domain                │
+│    logs.py          search_logs, get_log_details                 │
+│    aggregations.py  count_logs, count_unique_values,              │
+│                      aggregate_logs_by_field                      │
+│    metrics.py        query_metrics, list_available_metrics,       │
+│                      list_active_metrics, describe_metric,        │
+│                      send_custom_metric                           │
+│    dashboards.py    list/get/create/update dashboard, widget      │
+│                      pre-validation, datadog://widget-templates   │
+│    apm.py            search_apm_traces, get_full_trace,           │
+│                      list_apm_services, aggregate_spans           │
+│    monitors.py      list/search/get/create/update/validate        │
+│                      monitor, silence/unsilence                   │
+│    downtimes.py     list/get/schedule/update downtime             │
+│                                                                   │
+│  utils/response.py — Pydantic response infrastructure shared by   │
+│                      every domain (see "Response model layering")│
+│  utils/annotations.py — shared ToolAnnotations presets            │
+│  utils/time.py        — parse_time_value() shared by logs/spans/  │
+│                          downtimes for flexible time inputs        │
 └─────────────────────────────────────────────────────────────────┘
-                             ↓
-                      Datadog API Clients
-                             ↓
+                               ↓
+                      datadog-api-client (Python)
+                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Datadog APIs                              │
-│                                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │ Logs API │  │Metrics API│  │Dashboard│  │  APM API  │      │
-│  │    v2    │  │  v1 / v2 │  │  API v1 │  │    v2     │      │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘      │
-│                                                                 │
-│  ┌──────────┐                                                  │
-│  │Monitors │                                                   │
-│  │ API v1  │                                                   │
-│  └──────────┘                                                  │
-│                                                                 │
-│                     https://api.datadoghq.com                  │
-│                   (or region-specific endpoint)                │
+│                          Datadog APIs                             │
+│   Logs v2 · Metrics v1/v2 · Dashboards v1 · APM v2 (Spans +       │
+│   APMTrace) · Monitors v1 · Downtimes v2                          │
+│              https://api.<DD_SITE> (region-specific)              │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Component Details
+## Component details
 
-### Server Layer (`server.py`)
-- **Framework**: MCP Python SDK
-- **Transport**: stdio (standard input/output)
-- **Tool Registration**: 20 tools across 5 categories
-- **Response Format**: JSON with success/error handling
+### Server layer (`server.py`)
+- **Framework**: FastMCP (not the raw MCP Python SDK) - tools/resources/prompts are plain decorated functions; schemas are generated from Pydantic models and type hints automatically.
+- **Transport**: stdio, launched by Cursor via `fastmcp run src/datadog_mcp/server.py`.
+- **Registration**: each domain module exposes `register_<domain>_tools(mcp)`; `server.py` calls all of them plus defines resources/prompts directly. It contains no tool business logic itself (~210 lines total).
 
-### Authentication Layer (`auth.py`)
-- **Credentials**: API Key + Application Key
-- **Configuration**: Regional endpoint support
-- **Client Management**: Singleton pattern for API client
-- **Environment**: Reads from .env file
+### Authentication layer (`auth.py`)
+- `DatadogAuth` reads `DD_API_KEY`, `DD_APP_KEY`, `DD_SITE` (default `datadoghq.com`) and builds one `datadog_api_client.Configuration`/`ApiClient` pair, with `enable_retry=True` (handles `429`s and honors `X-Ratelimit-Reset`) and an explicit `request_timeout`.
+- `get_auth_instance()` is a module-level singleton factory living in `auth.py` itself (not `server.py`), which avoids a `server → tools → server` import cycle.
+- `utils/auth.py`'s `get_api_instance(api_class, auth)` is a small generic factory (`TypeVar`-based) that constructs a Datadog API client class bound to the shared `ApiClient`. Auth is always passed explicitly - no implicit "or create one" default - so tests can inject a fake/mocked `DatadogAuth` without patching globals.
 
-### Tools Layer (`tools/*.py`)
+### Tools layer (`tools/*.py`)
+Each domain module follows the same three-part shape:
+1. **Pydantic models** - inbound models parsed from Datadog responses (`DatadogModel`, tolerant) and outbound response models returned to the MCP client (`ToolResponse`/`PaginatedListResponse`, strict). See "Response model layering" below.
+2. **`_function(...)` implementations** - plain functions taking an explicit `auth: DatadogAuth` parameter (dependency injection), doing the actual API call + Pydantic parsing + error classification. These are what unit tests call directly, with a mocked Datadog API class and `fake_auth` fixture - no MCP machinery involved.
+3. **`register_<domain>_tools(mcp)`** - defines the `@mcp.tool(annotations=...)`-decorated public functions, which just resolve `get_auth_instance()` and delegate to the `_function`. Docstrings live here once (see Documentation Standards rule) and are the single source FastMCP uses to build each tool's description/parameter schema.
 
-#### Logs (`logs.py`)
-- Uses Datadog API v2 LogsApi
-- Supports query syntax, time ranges, facets
-- Returns formatted log entries with metadata
+### Response model layering (`utils/response.py`)
+- `DatadogModel` (inbound): `extra="ignore"`, tolerant - Datadog can add response fields at any time without warning; strict validation here would turn every Datadog-side addition into an outage.
+- `ToolResponse` / `PaginatedListResponse` (outbound): `extra="forbid"`, strict - this is data this server fully controls, so every field must be declared. Every response carries `success: bool` and `error: str | None` directly (no `Success | Error` union return types - FastMCP serializes a union return as `structuredContent = {"result": ...}`, which would silently change every tool's wire shape).
+- Both share an `_ExcludeNoneModel` mixin implementing `exclude_none` at the serializer level (via `model_serializer(mode="wrap")`), because FastMCP's `structuredContent` path (`pydantic_core.to_jsonable_python`) doesn't otherwise honor `model_dump(exclude_none=True)` called at the call site.
+- `PaginatedListResponse` declares `count`/`truncated`/`warning`/`total_available` up front; `finalize_list_response(response, list_field)` binary-searches the largest prefix of `list_field` that fits `MAX_RESPONSE_SIZE_BYTES` (50 KB - conservative, since FastMCP transmits both a text and a structured copy of every result).
+- `classify_api_exception` turns a raw `ApiException` into an actionable message: 403 → names the likely missing scope (so the agent explains the problem instead of retrying blindly), 429 → notes the client already retries transient rate limits automatically.
 
-#### Metrics (`metrics.py`)
-- Uses v1 and v2 MetricsApi
-- Query time series data
-- Submit custom metrics (gauge, count, rate)
-- List available metrics
+### Tool safety (`utils/annotations.py`)
+Four honest `ToolAnnotations` presets (`READ_ONLY`, `WRITE_ADDITIVE`, `WRITE_OVERWRITE`, `STATE_TOGGLE`) are shared across domains so equivalent operations (e.g. every domain's "update" tool) get consistent hints. See the table in [README.md](README.md#tool-safety-annotations).
 
-#### Dashboards (`dashboards.py`)
-- Uses Datadog API v1 DashboardsApi
-- Full CRUD operations
-- Support for complex widgets, variables, templates
-- Layout types: ordered (timeline) and free (free-form)
+## Data flow example: `search_logs`
 
-#### APM (`apm.py`)
-- Uses v2 SpansApi and TracesApi
-- Search spans with query syntax
-- Retrieve complete traces with all spans
-- Service discovery
+1. **Agent decision** - Cursor's agent picks `search_logs(query="status:error service:api", from_time="now-1h", to_time="now")`.
+2. **MCP dispatch** - FastMCP validates the call against `search_logs`'s Pydantic-derived schema and invokes the registered function in `tools/logs.py`.
+3. **Auth resolution** - the tool wrapper calls `get_auth_instance()` and passes it to `_search_logs(..., auth=auth)`.
+4. **Datadog call** - `_search_logs` builds a `LogsListRequest` (using `utils/time.parse_time_value` for `from_time`/`to_time`), calls `LogsApi.list_logs`, and parses each result with `LogEntry.model_validate(log.to_dict())`.
+5. **Response finalization** - results are wrapped in `SearchLogsResponse` and passed through `finalize_list_response(result, "logs")`, which truncates and sets `count`/`warning` if the payload is too large.
+6. **Return** - FastMCP serializes the `SearchLogsResponse` Pydantic model to both text and `structuredContent`; the agent receives it over stdio.
 
-#### Monitors (`monitors.py`)
-- Uses v1 MonitorsApi
-- Support for all monitor types (metric, log, APM, composite)
-- Full CRUD + mute/unmute operations
-- Threshold configuration and notifications
+Errors take the same path but return early with `format_error_response(SearchLogsResponse, e, required_scope="logs_read")`, which never raises past the tool boundary - every tool call is dispatched, but a `success=False` response signals failure so the caller can inspect `error`.
 
-## Data Flow Example
+## Testing architecture
 
-### Example: Search Logs
-
-1. **User Input** (Cursor)
-   ```
-   "Find error logs in the api service from the last hour"
-   ```
-
-2. **AI Agent Decision**
-   - Identifies need to use `search_logs` tool
-   - Constructs parameters:
-     - query: "status:error service:api"
-     - from_time: ISO 8601 timestamp (1 hour ago)
-     - to_time: ISO 8601 timestamp (now)
-
-3. **MCP Server** (`server.py`)
-   - Receives tool call via stdio
-   - Routes to `search_logs()` function
-   - Passes parameters
-
-4. **Auth Manager** (`auth.py`)
-   - Provides authenticated API client
-   - Configures regional endpoint
-
-5. **Logs Tool** (`logs.py`)
-   - Creates LogsListRequest with query filter
-   - Calls Datadog API v2
-   - Parses response
-
-6. **Datadog API**
-   - Searches log indexes
-   - Returns matching logs
-
-7. **Response Flow**
-   - Tool formats logs as JSON
-   - Server wraps in TextContent
-   - Returns via stdio to Cursor
-   - AI Agent presents to user
+- `tests/test_handshake.py` - boots the full server in-memory (`fastmcp.Client`), asserts the baseline tool/resource/prompt names are still present (guards against accidental renames), and round-trips one mocked tool call end-to-end.
+- `tests/test_tool_schemas.py` - snapshots every tool's JSON input/output schema as a golden file; any shape drift shows up in a PR diff.
+- `tests/tools/test_<domain>.py` - unit tests per domain calling `_function(...)` directly with mocked `datadog_api_client` classes and the `fake_auth` fixture.
+- `tests/utils/` - unit tests for shared utilities (`parse_time_value`, response truncation, etc).
+- Tests marked `@pytest.mark.live` make real, read-only Datadog API calls and are skipped by default (including in CI) - opt in with `pytest -m live` and real credentials.
 
 ## Security
 
-- **Credentials**: Stored in .env file (not committed)
-- **API Keys**: Loaded from environment variables
-- **Transport**: Local stdio, no network exposure
-- **Permissions**: Respects Datadog RBAC
+- Credentials are never read from a committed file; `.env.example` documents local-dev-only usage, and the supported path is Cursor's `mcp.json` `env` block.
+- Transport is local stdio - no network listener is opened by this server itself.
+- All permissions are enforced by Datadog's RBAC on the configured app key; this server never requests scopes beyond what's documented in `docs/SCOPE_VERIFICATION.md`, and no tool performs a destructive `DELETE` (dashboards, monitors, and downtime cancellation are all excluded by design).
 
-## Performance
+## Extension points
 
-- **Connection**: Reuses API client configuration
-- **Pagination**: Supports limits on all list operations
-- **Async**: MCP server runs asynchronously
-- **Efficiency**: Direct API calls, no caching layer
+To add a new tool, extend an existing domain module or add a new `tools/<domain>.py`:
 
-## Error Handling
-
-All tools return structured responses:
-```json
-{
-  "success": true/false,
-  "data": {...},
-  "error": "error message if failed"
-}
-```
-
-## Extension Points
-
-Want to add more tools?
-
-1. **Add function** to appropriate tool file
-2. **Register tool** in `server.py` `list_tools()`
-3. **Add handler** in `server.py` `call_tool()`
-
-Example:
 ```python
-# In tools/logs.py
-def get_log_archives():
-    # Implementation
-    pass
+# tools/<domain>.py
+class MyToolResponse(ToolResponse):
+    """Response for `my_new_tool`."""
+    items: list[str] = Field(default_factory=list)
 
-# In server.py
-@app.list_tools()
-async def list_tools():
-    tools.append(Tool(
-        name="get_log_archives",
-        description="...",
-        inputSchema={...}
-    ))
+def _my_new_tool(query: str, auth: DatadogAuth) -> MyToolResponse:
+    api_instance = get_api_instance(SomeApi, auth)
+    try:
+        response = api_instance.some_call(query)
+        return MyToolResponse(items=[...])
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(MyToolResponse, e, required_scope="some_scope")
 
-@app.call_tool()
-async def call_tool(name, arguments):
-    if name == "get_log_archives":
-        result = get_log_archives(**arguments)
+def register_mydomain_tools(mcp: FastMCP) -> None:
+    @mcp.tool(annotations=READ_ONLY)
+    def my_new_tool(query: str) -> MyToolResponse:
+        """One-line summary.
+
+        Use this when: ...
+
+        Args:
+            query: ...
+        """
+        return _my_new_tool(query, get_auth_instance())
 ```
 
-## File Structure
+Then call `register_mydomain_tools(mcp)` from `server.py`. Before writing the tool, verify the endpoint's required scope against the team's app key (see `docs/SCOPE_VERIFICATION.md` / `scripts/verify_scopes.py`) - this key is exclusive to this server and cannot be widened casually.
+
+## File structure
 
 ```
 datadog-mcp/
 ├── src/datadog_mcp/
-│   ├── __init__.py          # Package initialization
-│   ├── server.py            # 700+ lines - MCP server core
-│   ├── auth.py              # 70 lines - Authentication
-│   └── tools/
-│       ├── __init__.py      # Package initialization
-│       ├── logs.py          # 130 lines - 2 tools
-│       ├── metrics.py       # 180 lines - 3 tools
-│       ├── dashboards.py    # 250 lines - 5 tools
-│       ├── apm.py           # 200 lines - 3 tools
-│       └── monitors.py      # 350 lines - 7 tools
-├── pyproject.toml           # Dependencies & project config
-├── .env.example             # Credentials template
-├── setup.sh                 # Automated setup script
-├── README.md                # Complete documentation
-├── QUICKSTART.md            # 5-minute setup guide
-├── EXAMPLES.md              # Usage examples & recipes
-└── cursor-mcp-config.json   # Ready-to-use Cursor config
+│   ├── server.py               # Composition: registers all domains + resources/prompts
+│   ├── auth.py                 # DatadogAuth singleton + get_auth_instance()
+│   ├── tools/
+│   │   ├── logs.py
+│   │   ├── aggregations.py
+│   │   ├── metrics.py
+│   │   ├── dashboards.py
+│   │   ├── apm.py
+│   │   ├── monitors.py
+│   │   └── downtimes.py
+│   └── utils/
+│       ├── auth.py             # get_api_instance() factory
+│       ├── annotations.py      # ToolAnnotations presets
+│       ├── pagination.py       # DEFAULT_PAGE_SIZE / MAX_PAGE_SIZE / clamp_page_size
+│       ├── response.py         # DatadogModel, ToolResponse, PaginatedListResponse, etc.
+│       └── time.py             # parse_time_value()
+├── tests/
+│   ├── test_handshake.py
+│   ├── test_tool_schemas.py
+│   ├── tools/                  # per-domain unit tests
+│   └── utils/
+├── scripts/verify_scopes.py    # Empirical scope verification against the real app key
+├── docs/SCOPE_VERIFICATION.md  # Scope research + verification results
+├── .github/workflows/ci.yml    # ruff + pyright + pytest on push/PR
+├── .cursor/rules/               # Architecture/typing/documentation conventions for this repo
+├── pyproject.toml
+└── README.md
 ```
 
-**Total Code**: ~1,900 lines of Python
-**Total Tools**: 20 tools across 5 categories
-**API Coverage**: Logs, Metrics, Dashboards, APM, Monitors
+**Total tools**: 30 across 7 domains (logs, aggregations, metrics, dashboards, apm, monitors, downtimes), plus 2 resources and 4 prompts.

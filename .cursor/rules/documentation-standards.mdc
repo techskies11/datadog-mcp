@@ -6,34 +6,39 @@ alwaysApply: false
 
 # Documentation Standards
 
-Clear, comprehensive documentation is critical for MCP tools. The AI agent relies on these docs to understand when and how to use tools.
+Clear documentation is critical for MCP tools - the agent relies on it to pick
+the right tool and call it correctly. This convention is verified against how
+FastMCP actually renders tool descriptions (see `fastmcp-best-practices.mdc`
+for the mechanics): **everything meant to be visible in the tool's
+description must come before `Args:`; nothing meaningful goes after it.**
 
-## Tool Documentation Requirements
+## Tool Docstring Template
 
-Every `@mcp.tool()` decorated function MUST include:
+Every `@mcp.tool` function's docstring follows this shape, in this order:
 
-### 1. One-Line Summary
-
-```python
-@mcp.tool()
-def search_logs(...) -> dict[str, object]:
-    """Search and VIEW log entries with pagination."""
-```
-
-**Rules**:
-- Start with verb (Search, Query, Create, List, Count, etc.)
-- Be specific (not just "Get data")
-- Keep under 80 characters
-
-### 2. Important Usage Notes
+1. One-line summary (verb-first, specific, under ~80 chars)
+2. Optional `IMPORTANT:`/disambiguation note against similarly-named tools
+3. Optional `Use this when:` / `DO NOT use for:` bullet lists
+4. Optional inline call examples (plain text, not an `Examples:` header required)
+5. `Args:` section - always last, one line per parameter
 
 ```python
-@mcp.tool()
-def search_logs(...) -> dict[str, object]:
-    """Search and VIEW log entries with pagination.
+@mcp.tool(annotations=READ_ONLY)
+def search_logs(
+    query: str,
+    from_time: str,
+    to_time: str,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
+    sort: str = "timestamp",
+    indexes: list[str] | None = None,
+) -> SearchLogsResponse:
+    """Search and VIEW log entries. Returns paginated results.
 
-    ⚠️ IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
-    For COUNTING logs, use count_logs instead (10x faster).
+    IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
+    For COUNTING logs or unique values, use count_logs or count_unique_values
+    instead - they are much faster and lighter since they never fetch raw
+    log content.
 
     Use this when:
     - Need to view actual log messages and details
@@ -42,284 +47,153 @@ def search_logs(...) -> dict[str, object]:
 
     DO NOT use for:
     - Counting logs (use count_logs)
-    - Counting unique values (use count_unique)
-    - Statistical analysis (use aggregate_logs)
-```
-
-**Why**: Helps AI choose the RIGHT tool, not just ANY tool that might work.
-
-### 3. Parameter Documentation
-
-```python
-@mcp.tool()
-def search_logs(
-    query: str,
-    from_time: str,
-    to_time: str,
-    page_size: int = 25,
-    cursor: str | None = None
-) -> dict[str, object]:
-    """Search and VIEW log entries with pagination.
-
-    [... usage notes ...]
-
-    Args:
-        query: Search query in Datadog syntax (e.g., "status:error service:api")
-        from_time: Start time - ISO 8601, date math like "now-1h", or timestamp ms
-        to_time: End time - ISO 8601, date math like "now", or timestamp ms
-        page_size: Logs per page (default: 25, max: 50)
-        cursor: Pagination cursor from previous response
-```
-
-**Requirements**:
-- Every parameter documented
-- Include examples in parentheses
-- State defaults and constraints
-- Explain acceptable formats
-
-### 4. Return Documentation
-
-```python
-@mcp.tool()
-def search_logs(...) -> dict[str, object]:
-    """[summary and args...]
-
-    Returns:
-        Paginated logs with next_cursor for fetching more pages.
-        Response includes: logs (list), count (int), next_cursor (str), has_more (bool)
-```
-
-**Include**:
-- What's returned
-- Key fields in the response
-- Any pagination info
-
-### 5. Usage Examples
-
-```python
-@mcp.tool()
-def search_logs(...) -> dict[str, object]:
-    """[full documentation above...]
+    - Counting unique sessions/users (use count_unique_values)
+    - Statistical analysis (use aggregate_logs_by_field)
 
     Examples:
         search_logs("status:error", "now-1h", "now")
         search_logs("service:api", "2024-01-28T10:00:00Z", "2024-01-28T11:00:00Z", page_size=50)
-```
-
-**Provide**:
-- At least 2 examples
-- Show different parameter combinations
-- Use realistic values
-
-## Complete Example
-
-```python
-@mcp.tool()
-def aggregate_logs_by_field(
-    query: str,
-    from_time: str,
-    to_time: str,
-    group_by: str,
-    aggregation: Literal["count", "cardinality", "pc75", "pc90", "pc95", "pc99", "sum", "min", "max", "avg"] = "count",
-    metric: str | None = None,
-    limit: int = 10,
-    indexes: list[str] | None = None
-) -> dict[str, object]:
-    """Aggregate and group logs by a field with statistics (fast, no raw data transfer).
-
-    ✅ PERFECT for analytics, charts, and dashboards.
-
-    Use this when:
-    - "Group errors by service"
-    - "Top 10 airlines by conversation count"
-    - "Average duration per endpoint"
-
-    DO NOT use for:
-    - Viewing individual log entries (use search_logs)
-    - Simple counting (use count_logs)
-    - Just counting unique values (use count_unique_values)
 
     Args:
-        query: Search query to filter logs (e.g., "service:api status:error")
-        from_time: Start time - ISO 8601, date math like "now-1h", or timestamp ms
-        to_time: End time - ISO 8601, date math like "now", or timestamp ms
-        group_by: Field to group by (e.g., "@airline_name", "service", "status")
-        aggregation: Function - count, cardinality, pc75, pc90, pc95, pc99, sum, min, max, avg
-        metric: Metric field for aggregations other than count (e.g., "@duration")
-        limit: Max groups to return (default: 10)
-        indexes: Optional list of index names (e.g., ["main", "retention"])
-
-    Returns:
-        {"success": true, "buckets": [{"key": "aeromexico", "count": 50}, ...], "total_buckets": int}
-        Response includes aggregated data grouped by field with counts/values
-
-    Examples:
-        aggregate_logs_by_field("service:api", "now-1d", "now", "status", "count")
-        aggregate_logs_by_field("service:api", "now-1d", "now", "@endpoint", "avg", "@duration", limit=20)
-    """
-    auth = get_auth_instance()
-    return _aggregate_logs(query, from_time, to_time, group_by, aggregation, metric, limit, indexes, auth=auth)
-```
-
-## Code Documentation
-
-### Module Docstrings
-
-```python
-"""Logs tools for searching and retrieving Datadog logs.
-
-This module provides tools for:
-- Searching logs with query syntax
-- Counting logs efficiently
-- Aggregating log data
-- Retrieving individual log details
-
-All tools use the Datadog Logs API v2 and support pagination.
-"""
-```
-
-### Class Docstrings
-
-```python
-class ResponseBuilder:
-    """Builder for consistent API responses with automatic size limiting.
-
-    This class ensures all tool responses follow the same structure and
-    automatically truncates responses that exceed the maximum size limit.
-
-    Example:
-        response = ResponseBuilder.success("logs", log_entries, has_more=True)
+        query: Search query using Datadog log search syntax (e.g. "status:error service:api")
+        from_time: Start time - ISO 8601 (e.g. "2024-01-28T10:00:00Z"), relative date
+            math (e.g. "now-1h", "now"), or a millisecond timestamp
+        to_time: End time - same accepted formats as from_time
+        page_size: Logs per page (default: 25, max: 50)
+        cursor: Pagination cursor from a previous response's next_cursor field
+        sort: Sort order, "timestamp" or "-timestamp" for descending
+        indexes: Optional list of index names to search (e.g. ["main", "retention"])
     """
 ```
 
-### Function Docstrings (Internal)
+For a simple tool, the whole thing can be much shorter - not every tool needs
+"use this when"/"do not use for"/examples, only ones easily confused with a
+sibling tool:
 
 ```python
-def format_log_entry(log: Log) -> LogEntry:
-    """Format a raw log object into a structured LogEntry dict.
+@mcp.tool(annotations=READ_ONLY)
+def get_log_details(log_id: str) -> GetLogDetailsResponse:
+    """Get complete details of a specific log entry.
+
+    Use this when: need full information about a particular log (after searching).
 
     Args:
-        log: Raw log object from Datadog API
-
-    Returns:
-        LogEntry with standardized fields and safe defaults
+        log_id: Unique log identifier, as returned in a search_logs result's "id" field
     """
 ```
+
+## Do NOT Add `Returns:` Sections
+
+FastMCP truncates a tool's rendered description at the first section header
+it recognizes (`Args:` among them); text placed after `Args:` - including a
+`Returns:` block - either gets absorbed incorrectly or never reaches the
+agent. Grep this codebase: no tool docstring contains a `Returns:` section,
+and none should be added. If the return shape needs explanation beyond the
+response model's own field names/docstrings, put a one-line note in the
+tool's pre-`Args:` body instead (see `get_dashboard_details`'s note about
+truncation, for example).
+
+## Cross-Referencing Related Tools
+
+When two tools overlap in purpose, each one's docstring should point at the
+other with the concrete distinction, not just "see also":
+
+```python
+def silence_monitor(...) -> MuteMonitorResponse:
+    """Temporarily mute/silence monitor notifications.
+
+    Use this when: performing maintenance, testing, or a known issue doesn't need alerts
+    right now, for a single monitor. For muting many monitors on a schedule by scope
+    (e.g. "all monitors in this env, this weekend"), use schedule_downtime instead -
+    it is Datadog's purpose-built tool for scheduled, scoped silencing.
+    """
+
+def schedule_downtime(...) -> ScheduleDowntimeResponse:
+    """Schedule a downtime to mute a scope of monitors (or one monitor) over a time window.
+
+    Use this when: silencing many monitors at once by scope/tag (e.g. "mute all
+    alerts for env:staging this weekend"), or muting on a schedule with a known
+    end time. For muting exactly one already-known monitor with no scheduling
+    needs, silence_monitor is simpler.
+    """
+```
+
+## Parameter Documentation Requirements
+
+- Every parameter gets an `Args:` line, including ones with defaults.
+- State the accepted format explicitly for anything not self-evident from the
+  type (e.g. flexible time values, Datadog query syntax) with at least one
+  concrete example in parentheses.
+- State defaults/limits inline for numeric params (`page_size: Logs per page
+  (default: 25, max: 50)`), not just in the function signature.
+
+## Module and Internal Function Docstrings
+
+```python
+"""Logs tools for searching and retrieving Datadog logs."""  # module docstring: one line is enough
+```
+
+```python
+def _flatten_datadog_envelope(cls, data: Any) -> Any:
+    """Reshape Datadog's {id, type, attributes} envelope into a flat dict for validation."""
+```
+
+Internal (`_prefixed`) functions and Pydantic model classes get a short
+one-to-two line docstring explaining *why* they exist if it's not obvious
+from the name - not a restatement of the signature.
 
 ## Inline Comments
 
-Use sparingly, only for non-obvious logic:
+Use sparingly, only to explain non-obvious *why*, never to narrate *what*:
 
 ```python
-# ✅ GOOD - Explains WHY
-# Binary search for maximum items that fit within size limit
-while low <= high:
-    mid = (low + high) // 2
-    ...
+# ✅ GOOD - explains a workaround
+# Use kwargs to avoid conflict with Python's 'from' keyword
+filter=LogsQueryFilter(query=query, **{"from": from_time, "to": to_time})
 
-# ❌ BAD - States WHAT (obvious from code)
+# ❌ BAD - restates the code
 # Loop through logs
 for log in logs:
     ...
-
-# ✅ GOOD - Explains workaround
-# Use kwargs to avoid conflict with Python 'from' keyword
-filter=LogsQueryFilter(
-    query=query,
-    **{"from": from_time, "to": to_time}
-)
-```
-
-## Type Hints as Documentation
-
-Types document expected structure:
-
-```python
-# ✅ Types clarify structure
-def search_logs(
-    query: str,
-    from_time: str,  # ISO 8601 or "now-1h"
-    indexes: list[str] | None = None
-) -> SearchLogsResponse:
-    pass
-
-# ✅ TypedDict documents response structure
-class SearchLogsResponse(TypedDict):
-    """Response from search_logs tool."""
-    success: bool
-    logs: list[LogEntry]
-    count: int
-    next_cursor: NotRequired[str | None]
 ```
 
 ## README Updates
 
-When adding new tools, update README.md:
-
-```markdown
-### 🔍 Logs
-- **search_logs** - Search logs with Datadog query syntax
-- **count_logs** - Count logs matching a query (fast, no data transfer)
-- **count_unique_values** - Count unique values of a field
-- **aggregate_logs_by_field** - Group and aggregate logs with statistics
-- **get_log_details** - Get detailed information about a specific log
-```
+When adding a tool, add it to the matching domain section in `README.md`'s
+tool list (keep the one-line description consistent with the tool's own
+docstring summary) and, if it changes the total, update the tool count
+mentioned at the top of that section and in `ARCHITECTURE.md`.
 
 ## Anti-Patterns
 
-### ❌ Vague Documentation
-
 ```python
-@mcp.tool()
-def search_logs(query: str) -> dict[str, object]:
-    """Search logs."""  # Too brief, no guidance
-```
+# ❌ Too brief, no guidance on when to use it
+def search_logs(query: str) -> SearchLogsResponse:
+    """Search logs."""
 
-### ❌ Missing Usage Guidance
-
-```python
-@mcp.tool()
-def search_logs(query: str, from_time: str) -> dict[str, object]:
-    """Search logs with query.
-
-    Args:
-        query: Query string
-        from_time: Time value
-    """
-    # No examples, no "when to use", no format specs
-```
-
-### ❌ No Examples
-
-```python
-@mcp.tool()
-def search_logs(query: str, from_time: str) -> dict[str, object]:
+# ❌ Returns: section after Args: - invisible to the agent, don't do this
+def search_logs(query: str) -> SearchLogsResponse:
     """Search logs.
 
     Args:
         query: Search query
-        from_time: Start time
 
     Returns:
-        Results
+        Logs matching the query.
     """
-    # How do I use this? What format for from_time?
+
+# ❌ dict/TypedDict return instead of a documented Pydantic model
+def search_logs(query: str) -> dict[str, object]:
+    """Search logs."""
 ```
 
-## Documentation Checklist
+## Checklist
 
 For every tool:
-- [ ] One-line summary with verb
-- [ ] "Use this when" section
-- [ ] "DO NOT use for" section (if applicable)
-- [ ] All parameters documented with examples
-- [ ] Return value documented with fields
-- [ ] At least 2 usage examples
-- [ ] TypedDict for response structure
-- [ ] Module docstring present
-
-Quality check:
-- [ ] Could a new user understand how to use this?
-- [ ] Could an AI agent choose the right tool?
-- [ ] Are all edge cases and constraints documented?
-- [ ] Are examples realistic and helpful?
+- [ ] One-line, verb-first summary
+- [ ] "Use this when" guidance if the tool could be confused with a sibling
+- [ ] Cross-reference to the sibling tool by name, with the concrete distinction
+- [ ] Inline call examples in the body, before `Args:` (not required for trivial tools)
+- [ ] `Args:` section last, every parameter documented with format/defaults
+- [ ] No `Returns:` or `Examples:`-after-`Args:` section
+- [ ] Response shape documented via the Pydantic model itself, not a docstring restatement

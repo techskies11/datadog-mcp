@@ -6,7 +6,10 @@ alwaysApply: false
 
 # MCP Server Architecture
 
-Architecture patterns for building scalable, maintainable MCP servers.
+This file documents the actual architecture of this repo. Follow it for any new
+domain/tool - don't reintroduce patterns from older revisions of this server
+(a single monolithic `server.py`, `TypedDict` responses, or an implicit
+"create auth if not passed" factory) even if you've seen them in git history.
 
 ## Project Structure
 
@@ -14,402 +17,255 @@ Architecture patterns for building scalable, maintainable MCP servers.
 datadog-mcp/
 ├── src/
 │   └── datadog_mcp/
-│       ├── __init__.py          # Package exports
-│       ├── server.py            # FastMCP server entry point
-│       ├── auth.py              # Authentication singleton
-│       ├── tools/               # Tool implementations (by domain)
-│       │   ├── __init__.py
+│       ├── __init__.py
+│       ├── server.py            # Composition ONLY: wires domains + resources/prompts
+│       ├── auth.py              # DatadogAuth + get_auth_instance() singleton
+│       ├── tools/                # One module per Datadog domain
 │       │   ├── logs.py
+│       │   ├── aggregations.py
 │       │   ├── metrics.py
 │       │   ├── dashboards.py
 │       │   ├── apm.py
-│       │   └── monitors.py
-│       └── utils/               # Shared utilities
-│           ├── auth.py          # Auth helpers
-│           ├── pagination.py    # Pagination constants
-│           └── response.py      # Response builders
-├── tests/                       # Test files mirror src/
-├── pyproject.toml              # Dependencies & config
+│       │   ├── monitors.py
+│       │   └── downtimes.py
+│       └── utils/                # Shared, domain-agnostic utilities
+│           ├── auth.py           # get_api_instance() factory
+│           ├── annotations.py    # ToolAnnotations presets
+│           ├── pagination.py     # Page-size constants/clamping
+│           ├── response.py       # Pydantic response base classes + helpers
+│           └── time.py           # parse_time_value()
+├── tests/                        # Mirrors src/ (tests/tools/test_<domain>.py, tests/utils/)
+├── pyproject.toml
 └── README.md
 ```
 
 ## Separation of Concerns
 
-### Server Layer - Routing Only
+### Server Layer - Composition Only
+
+`server.py` never contains a tool implementation, a Pydantic model, or a call
+to a Datadog API class directly. It only imports each domain's
+`register_<domain>_tools` and calls it, plus defines `@mcp.resource`/`@mcp.prompt`
+(which are thin enough to live here).
 
 ```python
-# server.py - FastMCP definitions ONLY
+# server.py
 from fastmcp import FastMCP
-from datadog_mcp.tools.logs import search_logs as _search_logs
+from datadog_mcp.tools.logs import register_logs_tools
+from datadog_mcp.tools.metrics import register_metrics_tools
+# ... one import per domain
 
 mcp = FastMCP("Datadog Integration")
 
-@mcp.tool()
-def search_logs(
-    query: str,
-    from_time: str,
-    to_time: str
-) -> dict[str, object]:
-    """Search logs (documented here for the AI)."""
-    auth = get_auth_instance()
-    return _search_logs(query, from_time, to_time, auth=auth)
+register_logs_tools(mcp)
+register_metrics_tools(mcp)
+# ...
 ```
 
-### Tool Layer - Business Logic
+### Tool Layer - Three Parts Per Domain Module
+
+Each `tools/<domain>.py` has the same internal shape, in this order:
 
 ```python
-# tools/logs.py - Implementation details
-from datadog_api_client.v2.api.logs_api import LogsApi
-from typing import TypedDict
+# tools/logs.py
 
-class SearchLogsResponse(TypedDict):
-    success: bool
-    logs: list[LogEntry]
-    count: int
+# 1. Pydantic models (inbound + outbound - see pydantic-models.mdc)
+class LogEntry(DatadogModel):
+    ...
 
-def search_logs(
-    query: str,
-    from_time: str,
-    to_time: str,
-    auth: DatadogAuth
-) -> SearchLogsResponse:
-    """Internal implementation with full logic."""
-    api_instance = LogsApi(auth.api_client)
-    # ... implementation
-    return {"success": True, "logs": [...], "count": 10}
+class SearchLogsResponse(PaginatedListResponse):
+    logs: list[LogEntry] = Field(default_factory=list)
+
+# 2. Internal implementation - explicit auth param, no MCP decorator.
+#    This is what unit tests call directly with a mocked API class.
+def _search_logs(query: str, from_time: str, to_time: str, auth: DatadogAuth) -> SearchLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
+    try:
+        ...
+        return finalize_list_response(result, "logs")
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(SearchLogsResponse, e, required_scope="logs_read")
+
+# 3. Registration function - the ONLY place `@mcp.tool` appears for this domain.
+#    Docstrings live here once; FastMCP extracts them into the tool schema
+#    (see documentation-standards.mdc for the exact docstring convention).
+def register_logs_tools(mcp: FastMCP) -> None:
+    @mcp.tool(annotations=READ_ONLY)
+    def search_logs(query: str, from_time: str, to_time: str) -> SearchLogsResponse:
+        """Search and view log entries.
+
+        Args:
+            query: Datadog log search query
+            from_time: Start time (ISO 8601, date math, or timestamp)
+            to_time: End time (same accepted formats)
+        """
+        return _search_logs(query, from_time, to_time, get_auth_instance())
 ```
 
-**Why**: Keep FastMCP decorators separate from implementation. Makes testing easier and code more modular.
+**Why the split**: the `_function` is trivially unit-testable (no MCP machinery,
+just pass a `fake_auth` fixture and patch the relevant Datadog API class); the
+`register_*` wrapper is the only place that needs to know about FastMCP at all.
 
 ## Authentication Patterns
 
-### Singleton Pattern for API Client
+### Singleton Auth, Owned by `auth.py` (not `server.py`)
+
+`get_auth_instance()` lives in `auth.py` itself. Putting it in `server.py`
+creates a `server → tools → server` import cycle once `tools/*.py` needs to
+call it too - keep it where `DatadogAuth` is defined.
 
 ```python
 # auth.py
-from typing import Final
-from datadog_api_client import Configuration, ApiClient
+_auth_instance: DatadogAuth | None = None
 
-class DatadogAuth:
-    """Singleton-style auth manager."""
-
-    def __init__(
-        self,
-        api_key: str | None = None,
-        app_key: str | None = None,
-        site: str | None = None
-    ):
-        self.api_key: Final = api_key or os.getenv("DD_API_KEY")
-        self.app_key: Final = app_key or os.getenv("DD_APP_KEY")
-        self.site: Final = site or os.getenv("DD_SITE", "datadoghq.com")
-
-        if not self.api_key or not self.app_key:
-            raise ValueError("DD_API_KEY and DD_APP_KEY required")
-
-        configuration = Configuration()
-        configuration.api_key["apiKeyAuth"] = self.api_key
-        configuration.api_key["appKeyAuth"] = self.app_key
-        configuration.server_variables["site"] = self.site
-
-        self._api_client: Final = ApiClient(configuration)
-
-    @property
-    def api_client(self) -> ApiClient:
-        """No context manager needed - direct access."""
-        return self._api_client
+def get_auth_instance() -> DatadogAuth:
+    global _auth_instance
+    if _auth_instance is None:
+        _auth_instance = DatadogAuth()
+    return _auth_instance
 ```
 
-### Factory Pattern for API Instances
+### Explicit Dependency Injection - No Implicit Auth
+
+`get_api_instance` always requires an explicit `auth` argument. Never default
+it to `None` and construct a `DatadogAuth()` internally - that hides a real
+dependency and makes tests reach for monkeypatching instead of just passing
+a fixture.
 
 ```python
 # utils/auth.py
 from typing import TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
 
-def get_api_instance(
-    api_class: type[T],
-    auth: DatadogAuth | None = None
-) -> tuple[T, DatadogAuth]:
-    """Factory for creating API instances with auth."""
-    if auth is None:
-        auth = DatadogAuth()
-
-    api_instance = api_class(auth.api_client)
-    return api_instance, auth
+def get_api_instance(api_class: type[T], auth: DatadogAuth) -> T:
+    """Factory for a Datadog API client class bound to the shared ApiClient."""
+    return api_class(auth.api_client)
 ```
-
-**Benefits**:
-- Single API client reused across all tools
-- No context managers needed
-- Easy to test with dependency injection
-- Lazy initialization
-
-## Response Handling Patterns
-
-### Builder Pattern for Responses
 
 ```python
-# utils/response.py
-from typing import TypeAlias
+# Production code
+def _search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
+    ...
 
-JsonValue: TypeAlias = str | int | float | bool | None | dict[str, "JsonValue"] | list["JsonValue"]
-
-class ResponseBuilder:
-    """Consistent response formatting with auto-truncation."""
-
-    MAX_SIZE: Final[int] = 50_000  # 50KB
-
-    @staticmethod
-    def success(
-        data_key: str,
-        data: list[object],
-        **metadata: object
-    ) -> dict[str, object]:
-        response = {
-            "success": True,
-            data_key: data,
-            "count": len(data),
-            **metadata
-        }
-        return ResponseBuilder._check_and_truncate(response, data_key)
-
-    @staticmethod
-    def _check_and_truncate(
-        response: dict[str, object],
-        data_key: str
-    ) -> dict[str, object]:
-        # Size check and binary search truncation
-        pass
-
-def format_error_response(
-    data_key: str,
-    error: Exception
-) -> dict[str, object]:
-    """Consistent error responses."""
-    return {
-        "success": False,
-        "error": str(error),
-        data_key: []
-    }
+# Test code - no monkeypatching of globals needed
+def test_search_logs(fake_auth: DatadogAuth) -> None:
+    with patch("datadog_api_client.v2.api.logs_api.LogsApi.list_logs", ...):
+        result = _search_logs("status:error", "now-1h", "now", fake_auth)
+        assert result.success is True
 ```
 
-**Usage**:
+## Response Handling
 
-```python
-# In tool implementation
-try:
-    results = api.search(query)
-    return ResponseBuilder.success("logs", results, has_more=True)
-except ApiException as e:
-    return format_error_response("logs", e)
-```
+See **pydantic-models.mdc** for the full inbound/outbound model split. The
+short version: `utils/response.py` provides `DatadogModel` (tolerant inbound),
+`ToolResponse`/`PaginatedListResponse` (strict outbound, always carrying
+`success`/`error`), `finalize_list_response()` for size-based truncation, and
+`format_error_response()` for classified error messages (403 → scope hint,
+429 → rate-limit hint). Every domain module reuses these - do not hand-roll
+per-domain response builders or ad-hoc `dict[str, object]` responses.
 
 ## Pagination Pattern
 
-### Configuration
-
 ```python
 # utils/pagination.py
-from typing import Final
-
 DEFAULT_PAGE_SIZE: Final[int] = 25
 MAX_PAGE_SIZE: Final[int] = 50
 
-def validate_page_size(size: int) -> int:
-    """Clamp page size to valid range."""
+def clamp_page_size(size: int) -> int:
     return max(1, min(size, MAX_PAGE_SIZE))
 ```
 
-### Implementation
-
-```python
-from typing import TypedDict, NotRequired
-
-class PaginatedResponse(TypedDict):
-    success: bool
-    count: int
-    next_cursor: NotRequired[str | None]
-    has_more: NotRequired[bool]
-
-def search_logs(
-    query: str,
-    page_size: int = DEFAULT_PAGE_SIZE,
-    cursor: str | None = None,
-    auth: DatadogAuth
-) -> dict[str, object]:
-    """Tool with pagination support."""
-    page_size = validate_page_size(page_size)
-
-    # Build request with cursor
-    response = api.search(query, page_size=page_size, cursor=cursor)
-
-    return ResponseBuilder.success(
-        "logs",
-        response.logs,
-        next_cursor=response.next_page_cursor,
-        has_more=response.has_more
-    )
-```
+Any tool accepting `page_size`/`limit` should clamp it with this helper rather
+than trusting caller input directly, and should pass `cursor`/`next_cursor`
+through unchanged (Datadog's actual pagination tokens, not synthetic ones).
 
 ## Domain Organization
 
-### Group by Feature Domain
+Group tools by Datadog domain, one file per domain, and register that
+domain's tools via a single `register_<domain>_tools(mcp)` call from
+`server.py`. Splitting further (e.g. one file per tool) or merging domains
+into a shared file both make the "one place to look" property harder to keep.
 
 ```
 tools/
-├── logs.py          # All log-related tools
-├── metrics.py       # All metric-related tools
-├── dashboards.py    # All dashboard-related tools
-├── apm.py          # All APM/trace tools
-├── monitors.py      # All monitor/alert tools
-└── aggregations.py  # Specialized aggregation tools
-```
-
-Each file contains related tools that work with the same API domain.
-
-### Shared Utilities
-
-```
-utils/
-├── auth.py          # Authentication helpers
-├── pagination.py    # Pagination constants/helpers
-├── response.py      # Response builders
-└── validation.py    # Input validation (if needed)
-```
-
-## Type Safety Patterns
-
-### TypedDict for API Responses
-
-```python
-from typing import TypedDict, NotRequired
-
-class LogAttributes(TypedDict):
-    timestamp: str
-    message: str
-    status: str
-    service: str | None
-    tags: list[str]
-    attributes: dict[str, str | int | float | bool]
-
-class LogEntry(TypedDict):
-    id: str
-    attributes: LogAttributes
-
-class SearchLogsResponse(TypedDict):
-    success: bool
-    logs: list[LogEntry]
-    count: int
-    next_cursor: NotRequired[str | None]
-    has_more: NotRequired[bool]
-    truncated: NotRequired[bool]
-    warning: NotRequired[str]
-```
-
-### Type Aliases for Complex Types
-
-```python
-from typing import TypeAlias
-
-# Time representations
-Timestamp: TypeAlias = int  # Unix seconds
-DateMath: TypeAlias = str   # "now-1h", "now-7d"
-ISODate: TypeAlias = str    # "2024-01-28T10:00:00Z"
-TimeValue: TypeAlias = Timestamp | DateMath | ISODate
-
-# API responses
-LogsFilter: TypeAlias = dict[str, str | list[str]]
-MetricQuery: TypeAlias = str  # "avg:system.cpu{*}"
+├── logs.py          # search_logs, get_log_details
+├── aggregations.py  # count_logs, count_unique_values, aggregate_logs_by_field
+├── metrics.py       # query_metrics, list_*_metrics, describe_metric, send_custom_metric
+├── dashboards.py    # list/get/create/update dashboard + widget-templates resource
+├── apm.py           # search_apm_traces, get_full_trace, list_apm_services, aggregate_spans
+├── monitors.py      # list/search/get/create/update/validate monitor, silence/unsilence
+└── downtimes.py     # list/get/schedule/update downtime
 ```
 
 ## Error Handling Strategy
 
-### Layered Error Handling
+Tools never let an exception propagate past the `register_*` boundary and
+never return a `SuccessModel | ErrorModel` union (see pydantic-models.mdc for
+why). The pattern is always: catch broadly at the API-call boundary, classify,
+return a `success=False` instance of the *same* response model.
 
 ```python
-# Layer 1: API Client Errors
-try:
-    response = api_instance.search_logs(body=request)
-except ApiException as e:
-    return format_error_response("logs", e)
-
-# Layer 2: Data Validation Errors
-try:
-    validated_data = validate_response(response)
-except ValueError as e:
-    return format_error_response("logs", e)
-
-# Layer 3: Unexpected Errors
-except Exception as e:
-    logger.error(f"Unexpected error in search_logs: {e}")
-    return format_error_response("logs", Exception("Internal error"))
+def _search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
+    try:
+        response = api_instance.list_logs(body=...)
+        logs = [LogEntry.model_validate(log.to_dict()) for log in (response.data or [])]
+        return finalize_list_response(SearchLogsResponse(logs=logs), "logs")
+    except Exception as e:  # noqa: BLE001 - classified and surfaced via format_error_response
+        return format_error_response(SearchLogsResponse, e, required_scope="logs_read")
 ```
 
-### Graceful Degradation
-
-```python
-def format_log_entry(log: object) -> LogEntry:
-    """Extract log data with fallbacks."""
-    return {
-        "id": log.id if hasattr(log, 'id') else "unknown",
-        "timestamp": (
-            log.attributes.timestamp.isoformat()
-            if hasattr(log, 'attributes') and hasattr(log.attributes, 'timestamp')
-            else None
-        ),
-        "message": getattr(log.attributes, 'message', None),
-        "status": getattr(log.attributes, 'status', None),
-        # ... with fallbacks for all fields
-    }
-```
+A bare `except Exception` here is intentional and paired with
+`# noqa: BLE001` - `format_error_response` classifies whatever comes out
+(`ApiException`, a parsing `ValidationError`, etc.) into an actionable
+message instead of leaking a raw traceback to the agent.
 
 ## Testing Patterns
 
-### Dependency Injection for Testability
+Every domain's `_function(...)` implementations take `auth` as an explicit
+parameter specifically so tests can inject a `fake_auth` fixture (see
+`tests/conftest.py`) and mock only the relevant `datadog_api_client` class -
+no FastMCP server needs to be running for a domain unit test.
 
 ```python
-# Production code
-def search_logs(
-    query: str,
-    auth: DatadogAuth | None = None
-) -> dict[str, object]:
-    api_instance, auth = get_api_instance(LogsApi, auth)
-    # ... implementation
+# tests/tools/test_logs.py
+from unittest.mock import patch
+from datadog_mcp.tools.logs import _search_logs
 
-# Test code
-def test_search_logs():
-    mock_auth = create_mock_auth()
-    result = search_logs("test query", auth=mock_auth)
-    assert result["success"] is True
+def test_search_logs_success(fake_auth: DatadogAuth) -> None:
+    with patch("datadog_api_client.v2.api.logs_api.LogsApi.list_logs") as mock_call:
+        mock_call.return_value = ...
+        result = _search_logs("status:error", "now-1h", "now", DEFAULT_PAGE_SIZE, None, "timestamp", None, fake_auth)
+        assert result.success is True
 ```
+
+`tests/test_handshake.py` covers the other end: booting the real `mcp` object
+via `fastmcp.Client` in-memory and asserting the baseline tool/resource/prompt
+names are all still registered, plus one full mocked round-trip through the
+actual MCP protocol.
 
 ## Configuration Management
 
 ```python
-# Use environment variables for configuration
-import os
-from typing import Final
-
-API_KEY: Final = os.getenv("DD_API_KEY", "")
-APP_KEY: Final = os.getenv("DD_APP_KEY", "")
-SITE: Final = os.getenv("DD_SITE", "datadoghq.com")
-
-# Validate at startup
-if not API_KEY or not APP_KEY:
-    raise ValueError("DD_API_KEY and DD_APP_KEY must be set")
+# auth.py - env vars, unchanged across this revamp
+DD_API_KEY   # required
+DD_APP_KEY   # required
+DD_SITE      # optional, defaults to "datadoghq.com"
 ```
+
+Credentials are validated once, at `DatadogAuth.__init__`, raising immediately
+if either key is missing rather than deferring the failure to the first tool
+call.
 
 ## Checklist
 
-- [ ] Clear separation: server.py (routing) vs tools/ (logic)
-- [ ] Singleton auth pattern with factory for API instances
-- [ ] ResponseBuilder for consistent formatting
-- [ ] Pagination support with sensible defaults
-- [ ] Tools organized by domain (logs, metrics, etc.)
-- [ ] Shared utilities in utils/ directory
-- [ ] TypedDict for all API responses
-- [ ] Type aliases for complex types
-- [ ] Layered error handling with graceful degradation
-- [ ] Dependency injection for testability
-- [ ] Environment-based configuration
+- [ ] `server.py` only composes - no tool logic, no Pydantic models
+- [ ] New domain gets its own `tools/<domain>.py` with the 3-part shape (models, `_function`, `register_*`)
+- [ ] `get_auth_instance()` used only inside `register_*` wrappers; `_function`s take `auth` explicitly
+- [ ] Responses use `DatadogModel`/`ToolResponse`/`PaginatedListResponse` from `utils/response.py` - no ad-hoc dicts
+- [ ] Page-size params clamped with `utils/pagination.clamp_page_size`
+- [ ] Errors caught broadly at the API boundary and returned via `format_error_response`, never raised past the tool
+- [ ] New tool's scope verified against `docs/SCOPE_VERIFICATION.md` before writing code
+- [ ] Unit test added under `tests/tools/` calling the `_function` directly with `fake_auth`

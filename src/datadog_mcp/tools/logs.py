@@ -1,5 +1,7 @@
 """Logs tools for searching and retrieving Datadog logs."""
 
+from __future__ import annotations
+
 from typing import Any
 
 from datadog_api_client.v2.api.logs_api import LogsApi
@@ -7,46 +9,69 @@ from datadog_api_client.v2.model.logs_list_request import LogsListRequest
 from datadog_api_client.v2.model.logs_list_request_page import LogsListRequestPage
 from datadog_api_client.v2.model.logs_query_filter import LogsQueryFilter
 from datadog_api_client.v2.model.logs_sort import LogsSort
+from fastmcp import FastMCP
+from pydantic import Field, model_validator
 
-from ..auth import DatadogAuth
+from ..auth import DatadogAuth, get_auth_instance
+from ..utils.annotations import READ_ONLY
 from ..utils.auth import get_api_instance
-from ..utils.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-from ..utils.response import ResponseBuilder, format_error_response
+from ..utils.pagination import DEFAULT_PAGE_SIZE, clamp_page_size
+from ..utils.response import (
+    DatadogModel,
+    PaginatedListResponse,
+    ToolResponse,
+    finalize_list_response,
+    format_error_response,
+)
 
 
-def search_logs(
+class LogEntry(DatadogModel):
+    """A single log entry, flattened from Datadog's `{id, type, attributes}` envelope."""
+
+    id: str | None = None
+    timestamp: str | None = None
+    message: str | None = None
+    status: str | None = None
+    service: str | None = None
+    host: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_datadog_envelope(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("attributes"), dict):
+            return {"id": data.get("id"), **data["attributes"]}
+        return data
+
+
+class SearchLogsResponse(PaginatedListResponse):
+    """Response for `search_logs`."""
+
+    logs: list[LogEntry] = Field(default_factory=list)
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
+class GetLogDetailsResponse(ToolResponse):
+    """Response for `get_log_details`."""
+
+    log: LogEntry | None = None
+
+
+def _search_logs(
     query: str,
     from_time: str,
     to_time: str,
-    page_size: int = DEFAULT_PAGE_SIZE,
-    cursor: str | None = None,
-    sort: str = "timestamp",
-    indexes: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict[str, Any]:
-    """Search Datadog logs with query syntax (paginated).
+    page_size: int,
+    cursor: str | None,
+    sort: str,
+    indexes: list[str] | None,
+    auth: DatadogAuth,
+) -> SearchLogsResponse:
+    page_size = clamp_page_size(page_size)
+    api_instance = get_api_instance(LogsApi, auth)
 
-    Args:
-        query: Search query using Datadog log search syntax (e.g., "status:error service:api")
-        from_time: Start time (ISO 8601, date math like "now-1h", or timestamp ms)
-        to_time: End time (ISO 8601, date math like "now", or timestamp ms)
-        page_size: Number of logs per page (default: 25, max: 50)
-        cursor: Pagination cursor from previous response's next_cursor field
-        sort: Sort order, either "timestamp" or "-timestamp" for descending (default: "timestamp")
-        indexes: Optional list of index names to search (e.g., ["main", "retention"])
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Paginated search results with logs, next_cursor, and has_more flag
-
-    Note: For counting logs without fetching all data, use count_logs or count_unique instead.
-    """
-    # Validate and cap page_size
-    page_size = min(page_size, MAX_PAGE_SIZE)
-
-    api_instance, auth = get_api_instance(LogsApi, auth)
-
-    # Build the request with pagination
     page_config = LogsListRequestPage(limit=page_size)
     if cursor:
         page_config.cursor = cursor
@@ -58,90 +83,97 @@ def search_logs(
             indexes=indexes or ["*"],
         ),
         page=page_config,
-        sort=LogsSort(sort),
+        sort=LogsSort(sort),  # type: ignore[no-untyped-call]
     )
 
     try:
         response = api_instance.list_logs(body=body)
 
-        # Format response
-        logs = []
-        if hasattr(response, "data") and response.data:
-            for log in response.data:
-                log_entry = {
-                    "id": log.id if hasattr(log, "id") else None,
-                    "timestamp": log.attributes.timestamp.isoformat()
-                    if hasattr(log.attributes, "timestamp")
-                    else None,
-                    "message": log.attributes.message
-                    if hasattr(log.attributes, "message")
-                    else None,
-                    "status": log.attributes.status if hasattr(log.attributes, "status") else None,
-                    "service": log.attributes.service
-                    if hasattr(log.attributes, "service")
-                    else None,
-                    "tags": log.attributes.tags if hasattr(log.attributes, "tags") else [],
-                    "attributes": log.attributes.attributes
-                    if hasattr(log.attributes, "attributes")
-                    else {},
-                }
-                logs.append(log_entry)
+        logs = [LogEntry.model_validate(log.to_dict()) for log in (response.data or [])]
 
-        # Extract pagination info
-        next_cursor = None
+        next_cursor: str | None = None
         has_more = False
-        if hasattr(response, "meta") and hasattr(response.meta, "page"):
-            if hasattr(response.meta.page, "after"):
-                next_cursor = response.meta.page.after
-                has_more = True
+        page = getattr(response.meta, "page", None) if response.meta else None
+        if page is not None and getattr(page, "after", None):
+            next_cursor = page.after
+            has_more = True
 
-        # Use ResponseBuilder for automatic size limiting
-        return ResponseBuilder.success(
-            "logs", logs, has_more=has_more, next_cursor=next_cursor, page_size=page_size
-        )
+        result = SearchLogsResponse(logs=logs, next_cursor=next_cursor, has_more=has_more)
+        return finalize_list_response(result, "logs")
 
-    except Exception as e:
-        return format_error_response("logs", e)
+    except Exception as e:  # noqa: BLE001 - classified and surfaced via format_error_response
+        return format_error_response(SearchLogsResponse, e, required_scope="logs_read")
 
 
-def get_log_details(log_id: str, auth: DatadogAuth | None = None) -> dict[str, Any]:
-    """Get detailed information about a specific log entry.
-
-    Args:
-        log_id: The unique identifier of the log entry
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Detailed log information
-    """
-    api_instance, auth = get_api_instance(LogsApi, auth)
+def _get_log_details(log_id: str, auth: DatadogAuth) -> GetLogDetailsResponse:
+    api_instance = get_api_instance(LogsApi, auth)
 
     try:
         response = api_instance.get_log(log_id)  # type: ignore[attr-defined]
+        if response is None or response.data is None:
+            return GetLogDetailsResponse(success=False, error=f"Log not found: {log_id}")
 
-        if not response or not hasattr(response, "data"):
-            return {"success": False, "error": "Log not found"}
+        return GetLogDetailsResponse(log=LogEntry.model_validate(response.data.to_dict()))
 
-        log = response.data
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(GetLogDetailsResponse, e, required_scope="logs_read")
 
-        return {
-            "success": True,
-            "log": {
-                "id": log.id if hasattr(log, "id") else None,
-                "timestamp": log.attributes.timestamp.isoformat()
-                if hasattr(log.attributes, "timestamp")
-                else None,
-                "message": log.attributes.message if hasattr(log.attributes, "message") else None,
-                "status": log.attributes.status if hasattr(log.attributes, "status") else None,
-                "service": log.attributes.service if hasattr(log.attributes, "service") else None,
-                "tags": log.attributes.tags if hasattr(log.attributes, "tags") else [],
-                "host": log.attributes.host if hasattr(log.attributes, "host") else None,
-                "attributes": log.attributes.attributes
-                if hasattr(log.attributes, "attributes")
-                else {},
-                "raw": log.attributes.to_dict() if hasattr(log, "attributes") else {},
-            },
-        }
 
-    except Exception as e:
-        return format_error_response("log", e)
+def register_logs_tools(mcp: FastMCP) -> None:
+    """Register `search_logs` and `get_log_details` on `mcp`."""
+
+    @mcp.tool(annotations=READ_ONLY)
+    def search_logs(
+        query: str,
+        from_time: str,
+        to_time: str,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        cursor: str | None = None,
+        sort: str = "timestamp",
+        indexes: list[str] | None = None,
+    ) -> SearchLogsResponse:
+        """Search and VIEW log entries. Returns paginated results.
+
+        IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
+        For COUNTING logs or unique values, use count_logs or count_unique_values
+        instead - they are much faster and lighter since they never fetch raw
+        log content.
+
+        Use this when:
+        - Need to view actual log messages and details
+        - Debugging specific issues
+        - Investigating error details
+
+        DO NOT use for:
+        - Counting logs (use count_logs)
+        - Counting unique sessions/users (use count_unique_values)
+        - Statistical analysis (use aggregate_logs_by_field)
+
+        Examples:
+            search_logs("status:error", "now-1h", "now")
+            search_logs("service:api", "2024-01-28T10:00:00Z", "2024-01-28T11:00:00Z", page_size=50)
+
+        Args:
+            query: Search query using Datadog log search syntax (e.g. "status:error service:api")
+            from_time: Start time - ISO 8601 (e.g. "2024-01-28T10:00:00Z"), relative date
+                math (e.g. "now-1h", "now"), or a millisecond timestamp
+            to_time: End time - same accepted formats as from_time
+            page_size: Logs per page (default: 25, max: 50)
+            cursor: Pagination cursor from a previous response's next_cursor field
+            sort: Sort order, "timestamp" or "-timestamp" for descending
+            indexes: Optional list of index names to search (e.g. ["main", "retention"])
+        """
+        return _search_logs(
+            query, from_time, to_time, page_size, cursor, sort, indexes, get_auth_instance()
+        )
+
+    @mcp.tool(annotations=READ_ONLY)
+    def get_log_details(log_id: str) -> GetLogDetailsResponse:
+        """Get complete details of a specific log entry.
+
+        Use this when: need full information about a particular log (after searching).
+
+        Args:
+            log_id: Unique log identifier, as returned in a search_logs result's "id" field
+        """
+        return _get_log_details(log_id, get_auth_instance())

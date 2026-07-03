@@ -1,0 +1,1552 @@
+{
+  "aggregate_logs_by_field": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "default": "count",
+          "description": "Aggregation function to apply within each group",
+          "enum": [
+            "count",
+            "cardinality",
+            "pc75",
+            "pc90",
+            "pc95",
+            "pc99",
+            "sum",
+            "min",
+            "max",
+            "avg"
+          ],
+          "type": "string"
+        },
+        "from_time": {
+          "description": "Start time - ISO 8601, relative date math (e.g. \"now-1h\"), or a\nmillisecond timestamp",
+          "type": "string"
+        },
+        "group_by": {
+          "description": "Field to group by (e.g. \"@airline_name\", \"service\", \"status\")",
+          "type": "string"
+        },
+        "indexes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of index names to search"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "If set (e.g. \"5m\", \"1h\", \"1d\"), returns a timeseries per group\ninstead of a single scalar per group"
+        },
+        "limit": {
+          "default": 10,
+          "description": "Maximum number of groups to return (default: 10)",
+          "type": "integer"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Metric field for aggregations other than count (e.g. \"@duration\" for avg)"
+        },
+        "query": {
+          "description": "Search query using Datadog log search syntax",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time",
+        "group_by"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "aggregate_spans": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregation": {
+          "default": "count",
+          "description": "Aggregation function - count, avg, cardinality, median, pc75, pc90,\npc95, pc98, pc99, sum, min, max",
+          "type": "string"
+        },
+        "from_time": {
+          "description": "Start time - ISO 8601, relative date math (e.g. \"now-1h\"), or a\nmillisecond timestamp",
+          "type": "string"
+        },
+        "group_by": {
+          "description": "Facet to group by (e.g. \"service\", \"resource_name\", \"@http.status_code\")",
+          "type": "string"
+        },
+        "limit": {
+          "default": 10,
+          "description": "Maximum number of groups to return (default: 10)",
+          "type": "integer"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Field to aggregate for non-count aggregations (e.g. \"@duration\")"
+        },
+        "query": {
+          "description": "Search query using Datadog APM span search syntax",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time",
+        "group_by"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "count_logs": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "from_time": {
+          "description": "Start time - ISO 8601, relative date math (e.g. \"now-1h\"), or a\nmillisecond timestamp",
+          "type": "string"
+        },
+        "indexes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of index names to search (e.g. [\"main\", \"retention\"])"
+        },
+        "query": {
+          "description": "Search query using Datadog log search syntax (e.g. \"status:error service:api\")",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "count_unique_values": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "description": "Field to count unique values of (e.g. \"@session_id\", \"@user.id\", \"host\")",
+          "type": "string"
+        },
+        "from_time": {
+          "description": "Start time - ISO 8601, relative date math (e.g. \"now-1h\"), or a\nmillisecond timestamp",
+          "type": "string"
+        },
+        "indexes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of index names to search"
+        },
+        "query": {
+          "description": "Search query using Datadog log search syntax",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time",
+        "field"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "create_alert_monitor": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "description": "Notification text with @mentions (e.g. \"@slack-alerts CPU high!\")",
+          "type": "string"
+        },
+        "monitor_type": {
+          "description": "One of \"metric alert\", \"service check\", \"event alert\", \"query alert\",\n\"composite\", \"log alert\", \"rum alert\", \"trace-analytics alert\"",
+          "enum": [
+            "metric alert",
+            "service check",
+            "event alert",
+            "query alert",
+            "composite",
+            "log alert",
+            "rum alert",
+            "trace-analytics alert"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "Monitor name (descriptive)",
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Advanced settings (thresholds, evaluation_delay, notify_no_data, etc.)"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "1-5 (1=P1/highest, 5=P5/lowest)"
+        },
+        "query": {
+          "description": "Alert query (examples above)",
+          "type": "string"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tags (e.g. [\"team:backend\", \"severity:high\"])"
+        }
+      },
+      "required": [
+        "name",
+        "monitor_type",
+        "query",
+        "message"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "create_new_dashboard": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional description"
+        },
+        "layout_type": {
+          "description": "\"ordered\" or \"free\"",
+          "type": "string"
+        },
+        "notify_list": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional notification handles"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tags"
+        },
+        "template_variables": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional filters/variables"
+        },
+        "title": {
+          "description": "Dashboard name",
+          "type": "string"
+        },
+        "widgets": {
+          "description": "Widget definitions (see datadog://widget-templates or Datadog API docs)",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "layout_type",
+        "widgets"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "describe_metric": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "metric_name": {
+          "description": "Exact metric name (e.g. \"system.cpu.user\"), as returned by\nlist_available_metrics or list_active_metrics",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_name"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "get_dashboard_details": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dashboard_id": {
+          "description": "Dashboard ID from list_all_dashboards",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dashboard_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "get_downtime": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "downtime_id": {
+          "description": "Downtime ID from list_downtimes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "downtime_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "get_full_trace": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "trace_id": {
+          "description": "Trace identifier from search results",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "get_log_details": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "log_id": {
+          "description": "Unique log identifier, as returned in a search_logs result's \"id\" field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "log_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "get_monitor_details": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "monitor_id": {
+          "description": "Monitor ID from list_all_monitors or search_monitors",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "monitor_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_active_metrics": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional hostname filter"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "now-1h",
+          "description": "Only include metrics with data since this time - Unix timestamp\n(seconds), relative date math (e.g. \"now-1h\"), or an ISO 8601\ndatetime string (default: \"now-1h\")"
+        },
+        "tag_filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tag filter (e.g. \"env:prod\")"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_all_dashboards": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "filter_query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Search term to filter by name (case-insensitive substring match)"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max dashboards to return (default: 100)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_all_monitors": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "group_states": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Filter by state, e.g. \"alert,warn,no data\" - only show alerting monitors"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max monitors to return (default: 100)",
+          "type": "integer"
+        },
+        "monitor_tags": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Monitor-specific tags filter"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Monitor name search term"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Resource tags filter (e.g. \"env:prod,service:api\")"
+        },
+        "with_downtimes": {
+          "default": false,
+          "description": "Include muted-monitor info",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_apm_services": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Filter by environment (e.g. \"prod\", \"staging\")"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max services to return (default: 100)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_available_metrics": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Search term (e.g. \"cpu\", \"memory\", \"docker\")"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max metrics to return (default: 100)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "list_downtimes": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "current_only": {
+          "default": true,
+          "description": "If True (default), only include active/upcoming downtimes;\nif False, also include past/expired ones",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max downtimes to return (default: 100)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "query_metrics": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "from_time": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Start time - Unix timestamp (seconds), relative date math\n(e.g. \"now-4h\"), or an ISO 8601 datetime string"
+        },
+        "query": {
+          "description": "Metric query in Datadog syntax (examples above)",
+          "type": "string"
+        },
+        "to_time": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "End time - same accepted formats as from_time"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "schedule_downtime": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "display_timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "IANA timezone for displaying the schedule (e.g. \"America/New_York\")"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Same accepted formats as start; omit for an open-ended downtime\nthat must be ended later via update_downtime"
+        },
+        "message": {
+          "description": "Reason for the downtime (shown in notifications)",
+          "type": "string"
+        },
+        "monitor_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional single monitor ID to restrict this downtime to"
+        },
+        "monitor_tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional monitor tags to restrict this downtime to\n(mutually exclusive with monitor_id)"
+        },
+        "mute_first_recovery_notification": {
+          "default": false,
+          "description": "If True, suppress the first recovery\nnotification after the downtime ends (default: False)",
+          "type": "boolean"
+        },
+        "scope": {
+          "description": "Scope to mute, as a tag query (e.g. \"env:staging\", \"team:backend\",\nor \"*\" for everything matching monitor_id/monitor_tags)",
+          "type": "string"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "now",
+          "description": "ISO 8601, relative date math (e.g. \"now\", \"now+1h\"), or a Unix\ntimestamp (default: \"now\")"
+        }
+      },
+      "required": [
+        "scope",
+        "message"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "search_apm_traces": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Pagination cursor from a previous response"
+        },
+        "from_time": {
+          "description": "Start time - ISO 8601, relative date math (e.g. \"now-1h\"), or a\nmillisecond timestamp",
+          "type": "string"
+        },
+        "page_size": {
+          "default": 25,
+          "description": "Spans per page (default: 25, max: 50)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query using Datadog APM span search syntax (examples above)",
+          "type": "string"
+        },
+        "sort": {
+          "default": "timestamp",
+          "description": "\"timestamp\" or \"-timestamp\"",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "search_logs": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Pagination cursor from a previous response's next_cursor field"
+        },
+        "from_time": {
+          "description": "Start time - ISO 8601 (e.g. \"2024-01-28T10:00:00Z\"), relative date\nmath (e.g. \"now-1h\", \"now\"), or a millisecond timestamp",
+          "type": "string"
+        },
+        "indexes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of index names to search (e.g. [\"main\", \"retention\"])"
+        },
+        "page_size": {
+          "default": 25,
+          "description": "Logs per page (default: 25, max: 50)",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query using Datadog log search syntax (e.g. \"status:error service:api\")",
+          "type": "string"
+        },
+        "sort": {
+          "default": "timestamp",
+          "description": "Sort order, \"timestamp\" or \"-timestamp\" for descending",
+          "type": "string"
+        },
+        "to_time": {
+          "description": "End time - same accepted formats as from_time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "from_time",
+        "to_time"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "search_monitors": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "per_page": {
+          "default": 30,
+          "description": "Results per page (default: 30)",
+          "type": "integer"
+        },
+        "query": {
+          "default": "*",
+          "description": "Search syntax combining facets like status, tag, type, and free text\n(default: \"*\", i.e. all monitors)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "send_custom_metric": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional hostname"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Seconds between points (for count/rate)"
+        },
+        "metric_name": {
+          "description": "Your metric name (e.g. \"app.users.active\")",
+          "type": "string"
+        },
+        "metric_type": {
+          "default": "gauge",
+          "description": "\"gauge\", \"count\", or \"rate\"",
+          "type": "string"
+        },
+        "points": {
+          "description": "[(timestamp, value), ...] where timestamp is Unix seconds",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional tags (e.g. [\"env:prod\", \"region:us\"])"
+        }
+      },
+      "required": [
+        "metric_name",
+        "points"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "silence_monitor": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "end_timestamp": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Unix timestamp to auto-unmute at; mutes indefinitely if omitted"
+        },
+        "monitor_id": {
+          "description": "Monitor to mute",
+          "type": "integer"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mute only a specific scope (e.g. \"host:web-01\" or \"env:staging\")"
+        }
+      },
+      "required": [
+        "monitor_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "unsilence_monitor": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "monitor_id": {
+          "description": "Monitor to unmute",
+          "type": "integer"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Unmute a specific scope (must match the mute scope)"
+        }
+      },
+      "required": [
+        "monitor_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "update_alert_monitor": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New message (optional)"
+        },
+        "monitor_id": {
+          "description": "Monitor to update",
+          "type": "integer"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New name (optional)"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New options (optional)"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New priority (optional)"
+        },
+        "query": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New query (optional)"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New tags (optional)"
+        }
+      },
+      "required": [
+        "monitor_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "update_downtime": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "downtime_id": {
+          "description": "Downtime to update",
+          "type": "string"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New end time - same accepted formats as start (optional; set to\n\"now\" to end the downtime immediately)"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New message (optional)"
+        },
+        "monitor_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New single-monitor restriction (optional)"
+        },
+        "monitor_tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New monitor-tags restriction (optional)"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New scope (optional)"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New start time - ISO 8601, relative date math (e.g. \"now-1h\",\n\"now+2d\"), or a Unix timestamp (optional)"
+        }
+      },
+      "required": [
+        "downtime_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "update_existing_dashboard": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dashboard_id": {
+          "description": "Dashboard to update",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New description (optional)"
+        },
+        "layout_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New layout (optional)"
+        },
+        "notify_list": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New notification handles (optional)"
+        },
+        "tags": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New tags (optional)"
+        },
+        "template_variables": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New variables (optional)"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New title (optional)"
+        },
+        "widgets": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New widgets (optional, replaces the entire widget list)"
+        }
+      },
+      "required": [
+        "dashboard_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  },
+  "validate_monitor": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional notification message (only affects validation of @-mentions)"
+        },
+        "monitor_type": {
+          "description": "Same values as create_alert_monitor's monitor_type",
+          "enum": [
+            "metric alert",
+            "service check",
+            "event alert",
+            "query alert",
+            "composite",
+            "log alert",
+            "rum alert",
+            "trace-analytics alert"
+          ],
+          "type": "string"
+        },
+        "query": {
+          "description": "The monitor query to validate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "monitor_type",
+        "query"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    }
+  }
+}

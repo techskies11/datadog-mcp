@@ -6,490 +6,270 @@ alwaysApply: false
 
 # FastMCP Best Practices
 
-Best practices for building Model Context Protocol (MCP) servers with FastMCP.
+Best practices for this FastMCP-based server. See `mcp-architecture.mdc` for
+where code lives and `pydantic-models.mdc` for response model conventions -
+this file covers FastMCP-specific decorator/documentation/annotation
+behavior.
 
 ## Tool Design Principles
 
 ### Be Selective with Tools
 
 ```python
-from pydantic import BaseModel
-
-class UserResponse(BaseModel):
-    """User search response."""
-    success: bool
-    users: list[User]
-    count: int
-
-# ❌ BAD - Exposing every endpoint
+# ❌ BAD - one narrow tool per lookup key
 @mcp.tool()
-def get_user_by_id(user_id: str) -> UserResponse: pass
-
+def get_monitor_by_id(monitor_id: int) -> MonitorResponse: ...
 @mcp.tool()
-def get_user_by_email(email: str) -> UserResponse: pass
+def get_monitor_by_name(name: str) -> MonitorResponse: ...
 
-@mcp.tool()
-def get_user_by_username(username: str) -> UserResponse: pass
-
-@mcp.tool()
-def list_all_users() -> UserResponse: pass
-
-# ✅ GOOD - Single well-designed tool
-@mcp.tool()
-def search_users(
-    query: str,
-    field: Literal["id", "email", "username"] | None = None,
-    limit: int = 50
-) -> UserResponse:
-    """Search users by various fields.
+# ✅ GOOD - one well-designed tool with optional filters
+@mcp.tool(annotations=READ_ONLY)
+def list_all_monitors(
+    group_states: str | None = None,
+    name: str | None = None,
+    tags: str | None = None,
+) -> ListMonitorsResponse:
+    """List monitors with optional filters.
 
     Args:
-        query: Search query
-        field: Specific field to search (None searches all)
-        limit: Max results
+        group_states: Comma-separated states to filter by (e.g. "alert,warn")
+        name: Filter by monitor name substring
+        tags: Filter by tag query (e.g. "env:prod")
     """
-    return UserResponse(success=True, users=[], count=0)
+    ...
 ```
 
-**Why**: LLMs perform better with fewer, well-designed tools than many narrow ones.
+**Why**: LLMs perform better with fewer, well-designed tools than many narrow
+ones. This server currently exposes 30 tools across 7 domains - treat that as
+close to the practical ceiling, not a floor; a new tool should consolidate
+related endpoints (see `describe_metric`, which merges metric metadata + tags
+into one call) rather than adding a thin wrapper per Datadog endpoint.
 
-### Prioritize Safety
+### Tool Annotations Are Not Optional
+
+Every `@mcp.tool` in this codebase passes `annotations=` from
+`utils/annotations.py`. Pick the preset honestly - don't default to
+`READ_ONLY` for convenience, and don't mark an overwrite as non-destructive
+just because nothing is "deleted" in the HTTP sense:
 
 ```python
-from pydantic import BaseModel
+from datadog_mcp.utils.annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_OVERWRITE, STATE_TOGGLE
 
-class MonitorResponse(BaseModel):
-    """Monitor operation response."""
-    success: bool
-    monitor_id: int | None = None
-    error: str | None = None
+@mcp.tool(annotations=READ_ONLY)       # search/list/get/count/aggregate/validate
+def search_logs(...) -> SearchLogsResponse: ...
 
-# ✅ SAFE - Read-only operations preferred
-@mcp.tool()
-def list_monitors(state: str | None = None) -> MonitorResponse:
-    """List monitors with optional state filter."""
-    pass
+@mcp.tool(annotations=WRITE_ADDITIVE)  # creates a new resource, not idempotent
+def create_alert_monitor(...) -> CreateMonitorResponse: ...
 
-**Priority**: Focus on `GET`-equivalent operations that return data safely.
+@mcp.tool(annotations=WRITE_OVERWRITE) # overwrites existing state, no undo tool exists
+def update_existing_dashboard(...) -> UpdateDashboardResponse: ...
+
+@mcp.tool(annotations=STATE_TOGGLE)    # reversible, has a matching inverse tool
+def silence_monitor(...) -> MuteMonitorResponse: ...
+```
+
+If a new tool doesn't fit one of the four existing presets, that's a signal
+to think carefully about its actual safety properties before adding a fifth
+preset - don't stretch an existing one to fit.
+
+### No Delete Tools
+
+This server intentionally implements no `delete_*`/`cancel_*` tool for any
+resource (dashboards, monitors, downtimes). If a future change proposes one,
+it needs explicit team sign-off first and must use `destructiveHint=True`
+honestly - see `docs/SCOPE_VERIFICATION.md` and `utils/annotations.py` for
+the reasoning already on record for `cancel_downtime`.
 
 ## Tool Naming Conventions
 
-### Consistency is Key
+- `snake_case`, always. Letters/numbers/underscores only, no hyphens.
+- Prefer a verb-first name that matches the actual HTTP semantics: `list_*`
+  (many, filtered), `get_*` (one, by ID), `search_*` (query-based, many),
+  `create_*` (new resource), `update_*` (overwrite existing).
+- Every name must be unique across the whole server, since domain module
+  boundaries are invisible to the MCP client.
+
+## Docstrings ARE the Tool Schema - and FastMCP Trims Them
+
+FastMCP parses each tool's docstring `Args:` section into per-parameter
+descriptions in the generated JSON schema, and truncates the *tool-level*
+description at the first recognized section header (`Args:`, `Returns:`, ...).
+This has two consequences, both **verified against the running server** (grep
+this codebase for `Returns:` or `Examples:` inside a tool docstring - there
+are none, on purpose):
+
+1. **Put `Args:` last.** Anything meant to be visible in the tool's top-level
+   description (summary, "use this when", usage examples) must come *before*
+   `Args:` in the docstring body - text after `Args:` is either consumed as
+   per-parameter docs or dropped.
+2. **Don't add `Returns:`/`Examples:` sections after `Args:`.** They won't
+   surface anywhere useful. If you want to show a call example, put it in the
+   free-text body before `Args:` instead (see `documentation-standards.mdc`
+   for the exact template used across every tool in this repo).
 
 ```python
-# ❌ BAD - Inconsistent naming
-@mcp.tool()
-def searchLogs(): pass  # camelCase
-
-@mcp.tool()
-def get_metrics(): pass  # snake_case
-
-@mcp.tool()
-def CreateDashboard(): pass  # PascalCase
-
-# ✅ GOOD - Consistent snake_case
-@mcp.tool()
-def search_logs(): pass
-
-@mcp.tool()
-def get_metrics(): pass
-
-@mcp.tool()
-def create_dashboard(): pass
-```
-
-### Short, Descriptive Names
-
-```python
-# ❌ BAD - Too verbose
-@mcp.tool()
-def search_datadog_logs_with_query_syntax(): pass
-
-# ❌ BAD - Too vague
-@mcp.tool()
-def search(): pass
-
-# ✅ GOOD - Clear and concise
-@mcp.tool()
-def search_logs(): pass
-
-@mcp.tool()
-def query_metrics(): pass
-```
-
-**Rules**:
-- Start with a letter
-- Use only letters, numbers, underscores (no hyphens)
-- Choose either `snake_case` or `camelCase` and stick with it
-- Each name must be unique
-
-## Documentation Standards
-
-### Every Tool Needs Rich Documentation
-
-```python
-from pydantic import BaseModel
-
-class SearchLogsResponse(BaseModel):
-    """Search logs response with pagination."""
-    success: bool
-    logs: list[LogEntry]
-    count: int
-    next_cursor: str | None = None
-
-# ❌ BAD - Minimal or missing docs
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def search_logs(query: str, from_time: str, to_time: str) -> SearchLogsResponse:
-    """Search logs."""
-    pass
+    """Search and VIEW log entries. Returns paginated results.
 
-# ✅ GOOD - Comprehensive documentation
-@mcp.tool()
-def search_logs(
-    query: str,
-    from_time: str,
-    to_time: str,
-    page_size: int = 25,
-    cursor: str | None = None
-) -> SearchLogsResponse:
-    """Search and VIEW log entries with pagination.
-
-    ⚠️ IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
+    IMPORTANT: Use this ONLY when you need to VIEW log content for debugging.
     For COUNTING logs, use count_logs instead (10x faster).
 
     Use this when:
     - Need to view actual log messages and details
     - Debugging specific issues
-    - Investigating error details
 
     DO NOT use for:
     - Counting logs (use count_logs)
-    - Counting unique values (use count_unique)
 
     Args:
-        query: Search query in Datadog syntax (e.g., "status:error service:api")
-        from_time: Start time - ISO 8601, date math like "now-1h", or timestamp ms
-        to_time: End time - ISO 8601, date math like "now", or timestamp ms
-        page_size: Logs per page (default: 25, max: 50)
-        cursor: Pagination cursor from previous response
-
-    Returns:
-        SearchLogsResponse with logs and pagination info
-
-    Examples:
-        search_logs("status:error", "now-1h", "now")
-        search_logs("service:api", "2024-01-28T10:00:00Z", "2024-01-28T11:00:00Z")
+        query: Search query using Datadog log search syntax (e.g. "status:error service:api")
+        from_time: Start time - ISO 8601, date math ("now-1h"), or timestamp
+        to_time: End time - same accepted formats as from_time
     """
-    return SearchLogsResponse(success=True, logs=[], count=0)
+    return _search_logs(query, from_time, to_time, get_auth_instance())
 ```
 
-**Requirements**:
-- Clear summary of what the tool does
-- When to use it (and when NOT to use it)
-- All parameters documented with types and examples
-- Return value description
-- Concrete usage examples
+Don't duplicate parameter docs with `Annotated[..., Field(description=...)]`
+on top of an `Args:` entry - the docstring is the single source of truth.
 
-## Dependency Injection Pattern
+## Dependency Injection Pattern (Actual API Used Here)
 
-FastMCP uses FastAPI-style dependency injection with Pydantic:
+FastMCP does not provide a `Depends()`/FastAPI-style injection helper. This
+project's pattern is a plain module-level singleton factory called explicitly
+inside each tool wrapper, with the internal `_function` taking `auth` as a
+normal parameter:
 
 ```python
-from pydantic import BaseModel
-
-class SearchLogsResponse(BaseModel):
-    """Search logs response."""
-    success: bool
-    logs: list[LogEntry]
-    count: int
-
-# ❌ BAD - Global state
-api_client = DatadogAuth()
-
-@mcp.tool()
-def search_logs(query: str) -> SearchLogsResponse:
-    # Uses global api_client
-    pass
-
-# ✅ GOOD - Dependency injection
+# auth.py
 def get_auth_instance() -> DatadogAuth:
-    """Dependency factory - creates or returns auth instance."""
     global _auth_instance
     if _auth_instance is None:
         _auth_instance = DatadogAuth()
     return _auth_instance
 
-@mcp.tool()
-def search_logs(
-    query: str,
-    auth: DatadogAuth = Depends(get_auth_instance)
-) -> SearchLogsResponse:
-    """Auth is injected automatically by FastMCP."""
-    api = LogsApi(auth.api_client)
-    result = api.search(query)
-    return SearchLogsResponse(success=True, logs=result, count=len(result))
+# tools/logs.py
+def register_logs_tools(mcp: FastMCP) -> None:
+    @mcp.tool(annotations=READ_ONLY)
+    def search_logs(query: str, from_time: str, to_time: str) -> SearchLogsResponse:
+        """..."""
+        return _search_logs(query, from_time, to_time, get_auth_instance())
 ```
 
-**Note**: For simpler cases, you can also pass auth to internal functions:
-
-```python
-# ✅ ALSO GOOD - Explicit parameter passing
-@mcp.tool()
-def search_logs(query: str) -> SearchLogsResponse:
-    """Search logs."""
-    auth = get_auth_instance()
-    return _search_logs(query, auth=auth)
-
-def _search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
-    """Internal implementation with auth parameter."""
-    api = LogsApi(auth.api_client)
-    result = api.search(query)
-    return SearchLogsResponse(success=True, logs=result, count=len(result))
-```
+This keeps `_search_logs` trivially testable with a `fake_auth` fixture
+without needing FastMCP running at all (see `mcp-architecture.mdc`).
 
 ## Resources - Proactive Context
-
-Use resources to provide context the AI can access without being asked:
 
 ```python
 @mcp.resource("datadog://status")
 def get_datadog_status() -> str:
-    """Current Datadog account status and recent activity.
+    """Current Datadog account status: monitor alert counts and recent monitors.
 
-    Provides context about active monitors, recent dashboards, and system health.
-    Use this when you need to understand the current state before taking action.
+    Use this when you need a quick health snapshot before deciding what to
+    investigate further. This makes exactly one Datadog API call
+    (list_monitors, capped at 10 results) to avoid burning rate limit budget
+    on every read of this resource.
     """
     auth = get_auth_instance()
-
-    monitors = _list_monitors(limit=10, auth=auth)
-    dashboards = _list_dashboards(limit=5, auth=auth)
-
-    return f"""# Datadog Account Status
-
-## Active Monitors
-Total: {monitors.get('count', 0)}
-Recent: {[m['name'] for m in monitors.get('monitors', [])[:3]]}
-
-## Dashboards
-Total: {dashboards.get('count', 0)}
-"""
+    monitors_result = list_monitors_summary(..., limit=10, auth=auth)
+    if not monitors_result.success:
+        return f"# Datadog Account Status\n\nCould not fetch monitors: {monitors_result.error}"
+    alerting = [m.name for m in monitors_result.monitors if m.overall_state == "Alert"]
+    return f"# Datadog Account Status\n\nCurrently alerting: {alerting or 'none'}"
 ```
 
-**When to use resources**:
-- System status/health information
-- Account configuration
-- Common reference data
-- Context that helps the AI make better decisions
+**Use resources for**: status/health snapshots, reference data (e.g.
+`datadog://widget-templates`), or anything the agent benefits from reading
+without an explicit tool call. **Keep the API call budget explicit and
+bounded** in the docstring/comment - a resource can be read repeatedly by the
+agent, so it must not scale with account size or burn rate limit on every
+read.
 
-## Prompts - Common Query Templates
+## Prompts - Parameterized Workflow Templates
 
 ```python
 @mcp.prompt()
-def investigate_errors() -> str:
-    """Template for investigating error logs in production.
+def investigate_errors(
+    service: str | None = None, env: str = "prod", lookback: str = "now-1h"
+) -> str:
+    """Template for investigating error logs and traces in production.
 
-    Use this when: User asks about errors, issues, or problems.
+    Use this when: user asks about errors, issues, or problems in production.
+
+    Args:
+        service: Optional service name to scope the investigation to
+        env: Environment to search (default: "prod")
+        lookback: How far back to look, as date math (default: "now-1h")
     """
-    now = datetime.utcnow()
-    hour_ago = now - timedelta(hours=1)
-
+    service_filter = f" service:{service}" if service else ""
     return f"""I'll help you investigate errors. Here's what I'll do:
 
-1. Search for error logs in the last hour:
-   Query: "status:error env:prod"
-   Time: {hour_ago.isoformat()}Z to {now.isoformat()}Z
+1. Search for error logs from {lookback} to now:
+   Use search_logs with query "status:error env:{env}{service_filter}"
 
-2. Check for related APM traces
-3. Look for triggered monitors
-
-Let me search now..."""
+2. Check for related APM traces with errors:
+   Use search_apm_traces with query "env:{env}{service_filter} @error.message:*"
+"""
 ```
 
-**When to use prompts**:
-- Common investigation patterns
-- Multi-step workflows
-- Best practice guidance for LLMs
+Prompts in this repo take real parameters (not zero-arg templates) and
+reference concrete tool names/arguments in their returned text, so the agent
+has an executable plan rather than vague guidance. Keep each prompt scoped to
+one workflow (error investigation, performance analysis, monitor triage,
+monitoring setup) rather than one mega-prompt.
 
 ## Response Format Standards
 
-### Consistent Response Structure with Pydantic
+See `pydantic-models.mdc` in full. The one rule that matters most here: every
+tool has exactly one return type (a `ToolResponse`/`PaginatedListResponse`
+subclass carrying `success`/`error`), never a `Union` of a success and error
+model - FastMCP wraps `Union` returns in `structuredContent = {"result": ...}`,
+silently changing the wire shape.
+
+## Response Size Limiting
+
+Already implemented centrally - reuse it, don't reinvent it per domain:
 
 ```python
-from pydantic import BaseModel
+from datadog_mcp.utils.response import finalize_list_response
 
-class BaseResponse(BaseModel):
-    """Base response model."""
-    success: bool
-
-class ErrorResponse(BaseResponse):
-    """Error response."""
-    success: bool = False
-    error: str
-
-class LogEntry(BaseModel):
-    """Individual log entry."""
-    id: str
-    message: str | None = None
-    timestamp: str | None = None
-
-class LogsResponse(BaseResponse):
-    """Logs response with pagination."""
-    success: bool = True
-    logs: list[LogEntry]
-    count: int
-    next_cursor: str | None = None
-    has_more: bool = False
-
-# ✅ GOOD - Consistent success response
-def search_logs() -> LogsResponse:
-    return LogsResponse(
-        success=True,
-        logs=[...],
-        count=10,
-        next_cursor="abc123",
-        has_more=True
-    )
-
-# ✅ GOOD - Consistent error response (using Union)
-from typing import Union
-
-def search_logs() -> Union[LogsResponse, ErrorResponse]:
-    try:
-        # ... search logic
-        return LogsResponse(success=True, logs=[], count=0)
-    except Exception as e:
-        return ErrorResponse(success=False, error=str(e))
+result = SearchLogsResponse(logs=logs, ...)
+return finalize_list_response(result, "logs")  # binary-search truncation to MAX_RESPONSE_SIZE_BYTES
 ```
 
-## Performance Optimization
-
-### Response Size Limits with Pydantic
-
-```python
-from pydantic import BaseModel, field_validator
-import json
-
-class ResponseBuilder:
-    MAX_RESPONSE_SIZE = 50_000  # 50KB
-
-    @staticmethod
-    def success[T: BaseModel](
-        response: T,
-        max_items_field: str | None = None
-    ) -> T:
-        """Check response size and truncate if needed.
-
-        Args:
-            response: Pydantic response model
-            max_items_field: Field name containing list to truncate (e.g., "logs")
-        """
-        # Check size
-        size = len(response.model_dump_json())
-
-        if size > ResponseBuilder.MAX_RESPONSE_SIZE and max_items_field:
-            # Truncate list field using binary search
-            items = getattr(response, max_items_field)
-            if isinstance(items, list) and len(items) > 1:
-                # Find max items that fit
-                low, high = 1, len(items)
-                best = 1
-
-                while low <= high:
-                    mid = (low + high) // 2
-                    test_response = response.model_copy(
-                        update={max_items_field: items[:mid]}
-                    )
-                    if len(test_response.model_dump_json()) <= ResponseBuilder.MAX_RESPONSE_SIZE:
-                        best = mid
-                        low = mid + 1
-                    else:
-                        high = mid - 1
-
-                # Apply truncation
-                setattr(response, max_items_field, items[:best])
-                if hasattr(response, 'truncated'):
-                    response.truncated = True
-                if hasattr(response, 'warning'):
-                    response.warning = f"Response truncated from {len(items)} to {best} items"
-
-        return response
-```
-
-### Pagination Support
-
-```python
-from pydantic import BaseModel, Field
-
-class PaginatedResponse(BaseModel):
-    """Base paginated response."""
-    success: bool = True
-    count: int = Field(ge=0)
-    next_cursor: str | None = None
-    has_more: bool = False
-
-class SearchLogsResponse(PaginatedResponse):
-    """Search logs with pagination."""
-    logs: list[LogEntry]
-
-# ✅ GOOD - Built-in pagination
-@mcp.tool()
-def search_logs(
-    query: str,
-    page_size: int = 25,
-    cursor: str | None = None
-) -> SearchLogsResponse:
-    """Search logs with pagination support."""
-    # ... search logic
-    return SearchLogsResponse(
-        success=True,
-        logs=results,
-        count=len(results),
-        next_cursor=next_page_cursor,
-        has_more=has_more_results
-    )
-```
+`MAX_RESPONSE_SIZE_BYTES` (50 KB) is deliberately conservative because
+FastMCP transmits a tool result twice on the wire (text content +
+`structuredContent`).
 
 ## Error Handling
 
 ```python
-from pydantic import BaseModel
+from datadog_mcp.utils.response import format_error_response
 
-class ErrorResponse(BaseModel):
-    """Standard error response."""
-    success: bool = False
-    error: str
-
-class SearchLogsResponse(BaseModel):
-    """Search logs response."""
-    success: bool
-    logs: list[LogEntry]
-    count: int
-
-def format_error_response(error: Exception) -> ErrorResponse:
-    """Format a consistent error response."""
-    return ErrorResponse(success=False, error=str(error))
-
-@mcp.tool()
-def search_logs(query: str) -> SearchLogsResponse | ErrorResponse:
-    """Search logs with proper error handling."""
+def _search_logs(query: str, auth: DatadogAuth) -> SearchLogsResponse:
     try:
-        result = api.search(query)
-        return SearchLogsResponse(success=True, logs=result, count=len(result))
-    except ApiException as e:
-        return format_error_response(e)
+        ...
+        return finalize_list_response(SearchLogsResponse(logs=logs), "logs")
+    except Exception as e:  # noqa: BLE001 - classified and surfaced via format_error_response
+        return format_error_response(SearchLogsResponse, e, required_scope="logs_read")
 ```
+
+Always pass `required_scope` when the failure is plausibly a permissions
+issue - `format_error_response`/`classify_api_exception` use it to turn a
+generic 403 into an actionable "the app key is missing scope X" message,
+which matters given this server's app key has a fixed, narrow scope set (see
+`docs/SCOPE_VERIFICATION.md`).
 
 ## Checklist
 
-- [ ] Tools are selective and well-designed
-- [ ] Prefer safe, read-only operations
-- [ ] Consistent naming (snake_case)
-- [ ] Comprehensive documentation with examples
-- [ ] Use dependency injection for auth
-- [ ] Resources provide proactive context
-- [ ] Prompts guide common workflows
-- [ ] All responses use Pydantic models (no `dict[str, object]`)
-- [ ] Consistent response format with BaseModel
-- [ ] Response size limiting implemented
-- [ ] Pagination support for large datasets
-- [ ] Structured error handling with ErrorResponse model
+- [ ] Tool count stays disciplined - consolidate related endpoints rather than adding thin wrappers
+- [ ] Every `@mcp.tool` has an honest `annotations=` from `utils/annotations.py`
+- [ ] No delete/cancel tool without explicit team sign-off + honest `destructiveHint=True`
+- [ ] Docstring: summary + "use this when"/"do not use for" + examples, all BEFORE `Args:`; nothing after `Args:`
+- [ ] Auth injected via `get_auth_instance()` in the `register_*` wrapper only; `_function` takes `auth` explicitly
+- [ ] Resources document their bounded API-call cost
+- [ ] Prompts take real parameters and name concrete tools/arguments in their output
+- [ ] Single return type per tool (no `Model | ErrorModel` union)
+- [ ] List responses go through `finalize_list_response`
+- [ ] Errors caught broadly, classified via `format_error_response(..., required_scope=...)`

@@ -1,15 +1,108 @@
 """Dashboard tools for creating and managing Datadog dashboards."""
 
+from __future__ import annotations
+
 import json
-from typing import Any, Mapping, cast
+from collections.abc import Mapping
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from datadog_api_client.v1.api.dashboards_api import DashboardsApi
 from datadog_api_client.v1.model.dashboard import Dashboard
+from fastmcp import FastMCP
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..auth import DatadogAuth
+from ..auth import DatadogAuth, get_auth_instance
+from ..utils.annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_OVERWRITE
 from ..utils.auth import get_api_instance
-from ..utils.response import ResponseBuilder, format_error_response
+from ..utils.response import (
+    DatadogModel,
+    PaginatedListResponse,
+    ToolResponse,
+    finalize_list_response,
+    format_error_response,
+)
+
+VALID_LAYOUT_TYPES = ("ordered", "free")
+
+
+class _WidgetRequestSpec(BaseModel):
+    """Minimal shared shape of a widget `requests[]` entry: always needs a query."""
+
+    model_config = ConfigDict(extra="allow")
+
+    q: str
+
+
+class TimeseriesWidgetDefinition(BaseModel):
+    """Required shape of a `timeseries` widget's `definition`, for pre-flight validation.
+
+    `extra="allow"` because Datadog's real schema has many more optional
+    fields (`yaxis`, `markers`, `events`, ...) that this server does not
+    need to police - only the fields that most commonly cause a rejected
+    dashboard create/update are validated here.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["timeseries"]
+    requests: list[_WidgetRequestSpec] = Field(min_length=1)
+    title: str | None = None
+
+
+class QueryValueWidgetDefinition(BaseModel):
+    """Required shape of a `query_value` widget's `definition`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["query_value"]
+    requests: list[_WidgetRequestSpec] = Field(min_length=1)
+    title: str | None = None
+
+
+class ToplistWidgetDefinition(BaseModel):
+    """Required shape of a `toplist` widget's `definition`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["toplist"]
+    requests: list[_WidgetRequestSpec] = Field(min_length=1)
+    title: str | None = None
+
+
+_KNOWN_WIDGET_DEFINITIONS: dict[str, type[BaseModel]] = {
+    "timeseries": TimeseriesWidgetDefinition,
+    "query_value": QueryValueWidgetDefinition,
+    "toplist": ToplistWidgetDefinition,
+}
+
+
+def _validate_known_widgets(widgets: list[dict[str, Any]]) -> str | None:
+    """Pre-flight validation for the widget types this server models explicitly.
+
+    Widgets are still passed straight through to Datadog for any type not in
+    `_KNOWN_WIDGET_DEFINITIONS` (Datadog has dozens of widget types; modeling
+    all of them here would be a large, low-value maintenance burden) - this
+    only catches the most common mistakes (missing `requests`, wrong `type`)
+    for the 3 widget types explicitly listed in `datadog://widget-templates`
+    before spending an API call finding out.
+
+    Returns an error message for the first invalid widget found, or `None`
+    if every recognized widget passed validation.
+    """
+    for index, widget in enumerate(widgets):
+        definition = widget.get("definition") if isinstance(widget, dict) else None
+        widget_type = definition.get("type") if isinstance(definition, dict) else None
+        if not isinstance(widget_type, str):
+            continue
+        model_cls = _KNOWN_WIDGET_DEFINITIONS.get(widget_type)
+        if model_cls is None:
+            continue
+        try:
+            model_cls.model_validate(definition)
+        except ValidationError as e:
+            return f"Widget #{index} (type={widget_type!r}) failed validation: {e}"
+    return None
 
 
 def _dashboard_request_headers(api_client: Any) -> dict[str, str]:
@@ -51,126 +144,157 @@ def _get_dashboard_json_dict(api_instance: DashboardsApi, dashboard_id: str) -> 
     return cast(dict[str, Any], decoded)
 
 
-def list_dashboards(
-    filter_query: str | None = None, limit: int = 50, auth: DatadogAuth | None = None
-) -> dict:
-    """List all dashboards with optional filtering.
+class DashboardSummary(DatadogModel):
+    """One dashboard's basic info, as returned by `list_all_dashboards`."""
 
-    Args:
-        filter_query: Optional search query to filter dashboards by name or tags
-        limit: Maximum number of dashboards to return (default: 50, max: 50)
-        auth: DatadogAuth instance (injected dependency)
+    id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    author_handle: str | None = None
+    created_at: str | None = None
+    modified_at: str | None = None
+    url: str | None = None
+    is_read_only: bool = False
+    layout_type: str | None = None
 
-    Returns:
-        dict: List of dashboards with basic information (size-limited)
+
+class ListAllDashboardsResponse(PaginatedListResponse):
+    """Response for `list_all_dashboards`."""
+
+    dashboards: list[DashboardSummary] = Field(default_factory=list)
+
+
+class DashboardWidgetSummary(DatadogModel):
+    """One widget's definition within a dashboard."""
+
+    definition_type: str | None = None
+    title: str | None = None
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
+class GetDashboardDetailsResponse(PaginatedListResponse):
+    """Response for `get_dashboard_details`.
+
+    Inherits the truncation machinery from `PaginatedListResponse`: if a
+    dashboard has enough widgets to exceed the response size budget, the
+    `widgets` list itself is truncated (with `truncated`/`warning`/
+    `total_available` set) rather than returning an unbounded multi-hundred-KB
+    payload, which is what the pre-Pydantic implementation did.
     """
-    api_instance, auth = get_api_instance(DashboardsApi, auth)
+
+    dashboard_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    layout_type: str | None = None
+    url: str | None = None
+    widgets: list[DashboardWidgetSummary] = Field(default_factory=list)
+    template_variables: list[dict[str, Any]] = Field(default_factory=list)
+    notify_list: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+
+class CreateDashboardResponse(ToolResponse):
+    """Response for `create_new_dashboard`."""
+
+    dashboard_id: str | None = None
+    url: str | None = None
+    title: str | None = None
+
+
+class UpdateDashboardResponse(ToolResponse):
+    """Response for `update_existing_dashboard`."""
+
+    dashboard_id: str | None = None
+    url: str | None = None
+    title: str | None = None
+
+
+def _list_dashboards(
+    filter_query: str | None, limit: int, auth: DatadogAuth
+) -> ListAllDashboardsResponse:
+    api_instance = get_api_instance(DashboardsApi, auth)
 
     try:
         response = api_instance.list_dashboards()
 
-        dashboards = []
-        if hasattr(response, "dashboards") and response.dashboards:
-            for dashboard in response.dashboards:
-                # Convert dashboard object to dict
-                if hasattr(dashboard, "to_dict"):
-                    dashboard_dict = dashboard.to_dict()
-                else:
-                    dashboard_dict = dashboard if isinstance(dashboard, dict) else {}
+        dashboards: list[DashboardSummary] = []
+        for dashboard in response.dashboards or []:
+            summary = DashboardSummary.model_validate(dashboard.to_dict())
+            if filter_query and filter_query.lower() not in (summary.title or "").lower():
+                continue
+            dashboards.append(summary)
+            if len(dashboards) >= limit:
+                break
 
-                # Apply filter if provided
-                if filter_query:
-                    title = dashboard_dict.get("title", "").lower()
-                    if filter_query.lower() not in title:
-                        continue
+        result = ListAllDashboardsResponse(dashboards=dashboards)
+        return finalize_list_response(result, "dashboards")
 
-                dashboard_entry = {
-                    "id": dashboard_dict.get("id"),
-                    "title": dashboard_dict.get("title"),
-                    "description": dashboard_dict.get("description"),
-                    "author_handle": dashboard_dict.get("author_handle"),
-                    "created_at": dashboard_dict.get("created_at"),
-                    "modified_at": dashboard_dict.get("modified_at"),
-                    "url": dashboard_dict.get("url"),
-                    "is_read_only": dashboard_dict.get("is_read_only", False),
-                    "layout_type": str(dashboard_dict.get("layout_type", ""))
-                    if dashboard_dict.get("layout_type")
-                    else None,
-                }
-                dashboards.append(dashboard_entry)
-
-                if len(dashboards) >= limit:
-                    break
-
-        return ResponseBuilder.success("dashboards", dashboards)
-
-    except Exception as e:
-        return format_error_response("dashboards", e)
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(ListAllDashboardsResponse, e, required_scope="dashboards_read")
 
 
-def get_dashboard(dashboard_id: str, auth: DatadogAuth | None = None) -> dict:
-    """Get complete dashboard definition including all widgets and configuration.
-
-    Uses the dashboard JSON endpoint directly so read tools do not depend on the
-    OpenAPI client's deserialization of every widget type (see module doc on
-    ``_get_dashboard_json_dict``).
-
-    Args:
-        dashboard_id: The unique identifier of the dashboard
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Complete dashboard definition (auto-truncated if too large)
-    """
-    api_instance, _auth = get_api_instance(DashboardsApi, auth)
+def _get_dashboard(dashboard_id: str, auth: DatadogAuth) -> GetDashboardDetailsResponse:
+    api_instance = get_api_instance(DashboardsApi, auth)
 
     try:
-        dashboard_dict = _get_dashboard_json_dict(api_instance, dashboard_id)
-        return {"success": True, "dashboard": dashboard_dict}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        raw = _get_dashboard_json_dict(api_instance, dashboard_id)
+
+        widgets = [
+            DashboardWidgetSummary(
+                definition_type=(w.get("definition") or {}).get("type"),
+                title=(w.get("definition") or {}).get("title"),
+                definition=w.get("definition") or {},
+            )
+            for w in raw.get("widgets", [])
+        ]
+
+        result = GetDashboardDetailsResponse(
+            dashboard_id=dashboard_id,
+            title=raw.get("title"),
+            description=raw.get("description"),
+            layout_type=raw.get("layout_type"),
+            url=raw.get("url"),
+            widgets=widgets,
+            template_variables=raw.get("template_variables") or [],
+            notify_list=raw.get("notify_list") or [],
+            tags=raw.get("tags") or [],
+        )
+        return finalize_list_response(result, "widgets")
+
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(
+            GetDashboardDetailsResponse, e, required_scope="dashboards_read"
+        )
 
 
-def create_dashboard(
+def _create_dashboard(
     title: str,
     layout_type: str,
-    widgets: list[dict],
-    description: str | None = None,
-    template_variables: list[dict] | None = None,
-    notify_list: list[str] | None = None,
-    tags: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict:
-    """Create a new Datadog dashboard with advanced configuration.
+    widgets: list[dict[str, Any]],
+    description: str | None,
+    template_variables: list[dict[str, Any]] | None,
+    notify_list: list[str] | None,
+    tags: list[str] | None,
+    auth: DatadogAuth,
+) -> CreateDashboardResponse:
+    if layout_type not in VALID_LAYOUT_TYPES:
+        return CreateDashboardResponse(
+            success=False,
+            error=f"Invalid layout_type {layout_type!r}. Must be one of: {VALID_LAYOUT_TYPES}",
+        )
 
-    Args:
-        title: Dashboard title
-        layout_type: Layout type - "ordered" (timeline) or "free" (free-form)
-        widgets: List of widget definitions (see Datadog API docs for widget schemas)
-        description: Optional dashboard description
-        template_variables: Optional list of template variable definitions
-        notify_list: Optional list of handles to notify on changes
-        tags: Optional list of tags
-        auth: DatadogAuth instance (injected dependency)
+    widget_error = _validate_known_widgets(widgets)
+    if widget_error:
+        return CreateDashboardResponse(success=False, error=widget_error)
 
-    Returns:
-        dict: Created dashboard information including ID
-    """
-    if auth is None:
-        auth = DatadogAuth()
-
-    # Validate layout type
-    valid_layouts = ["ordered", "free"]
-    if layout_type not in valid_layouts:
-        return {"success": False, "error": f"Invalid layout_type. Must be one of: {valid_layouts}"}
-
-    # Use API client directly - no context manager needed
-    api_instance = DashboardsApi(auth.api_client)
+    api_instance = get_api_instance(DashboardsApi, auth)
 
     try:
-        # Build dashboard object
-        dashboard_data = {"title": title, "layout_type": layout_type, "widgets": widgets}
-
+        dashboard_data: dict[str, Any] = {
+            "title": title,
+            "layout_type": layout_type,
+            "widgets": widgets,
+        }
         if description:
             dashboard_data["description"] = description
         if template_variables:
@@ -180,94 +304,229 @@ def create_dashboard(
         if tags:
             dashboard_data["tags"] = tags
 
-        body = Dashboard(**dashboard_data)
-        response = api_instance.create_dashboard(body=body)
+        response = api_instance.create_dashboard(body=Dashboard(**dashboard_data))
 
-        return {
-            "success": True,
-            "dashboard_id": response.id if hasattr(response, "id") else None,
-            "url": response.url if hasattr(response, "url") else None,
-            "title": response.title if hasattr(response, "title") else title,
-        }
+        return CreateDashboardResponse(
+            dashboard_id=response.id, url=response.url, title=response.title or title
+        )
 
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(CreateDashboardResponse, e, required_scope="dashboards_write")
 
 
-def update_dashboard(
+def _update_dashboard(
     dashboard_id: str,
-    title: str | None = None,
-    widgets: list[dict] | None = None,
-    description: str | None = None,
-    template_variables: list[dict] | None = None,
-    layout_type: str | None = None,
-    notify_list: list[str] | None = None,
-    tags: list[str] | None = None,
-    auth: DatadogAuth | None = None,
-) -> dict:
-    """Update an existing dashboard.
+    title: str | None,
+    widgets: list[dict[str, Any]] | None,
+    description: str | None,
+    template_variables: list[dict[str, Any]] | None,
+    layout_type: str | None,
+    notify_list: list[str] | None,
+    tags: list[str] | None,
+    auth: DatadogAuth,
+) -> UpdateDashboardResponse:
+    if widgets is not None:
+        widget_error = _validate_known_widgets(widgets)
+        if widget_error:
+            return UpdateDashboardResponse(success=False, error=widget_error)
 
-    Args:
-        dashboard_id: The unique identifier of the dashboard to update
-        title: Optional new title
-        widgets: Optional new widget configuration
-        description: Optional new description
-        template_variables: Optional new template variables
-        layout_type: Optional new layout type - "ordered" or "free"
-        notify_list: Optional new notify list
-        tags: Optional new tags
-        auth: DatadogAuth instance (injected dependency)
-
-    Returns:
-        dict: Updated dashboard information
-    """
-    if auth is None:
-        auth = DatadogAuth()
-
-    # Use API client directly - no context manager needed
-    api_instance = DashboardsApi(auth.api_client)
+    api_instance = get_api_instance(DashboardsApi, auth)
 
     try:
-        # First get the existing dashboard
-        existing = api_instance.get_dashboard(dashboard_id)
-        existing_dict = existing.to_dict() if hasattr(existing, "to_dict") else {}
+        existing_dict = _get_dashboard_json_dict(api_instance, dashboard_id)
 
-        # Update only provided fields
-        dashboard_data = {
+        dashboard_data: dict[str, Any] = {
             "title": title or existing_dict.get("title"),
             "layout_type": layout_type or existing_dict.get("layout_type"),
             "widgets": widgets if widgets is not None else existing_dict.get("widgets", []),
         }
+        for field, value in (
+            ("description", description),
+            ("template_variables", template_variables),
+            ("notify_list", notify_list),
+            ("tags", tags),
+        ):
+            if value is not None:
+                dashboard_data[field] = value
+            elif field in existing_dict:
+                dashboard_data[field] = existing_dict[field]
 
-        if description is not None:
-            dashboard_data["description"] = description
-        elif "description" in existing_dict:
-            dashboard_data["description"] = existing_dict["description"]
+        response = api_instance.update_dashboard(dashboard_id, body=Dashboard(**dashboard_data))
 
-        if template_variables is not None:
-            dashboard_data["template_variables"] = template_variables
-        elif "template_variables" in existing_dict:
-            dashboard_data["template_variables"] = existing_dict["template_variables"]
+        return UpdateDashboardResponse(
+            dashboard_id=response.id or dashboard_id,
+            url=response.url,
+            title=response.title or title,
+        )
 
-        if notify_list is not None:
-            dashboard_data["notify_list"] = notify_list
-        elif "notify_list" in existing_dict:
-            dashboard_data["notify_list"] = existing_dict["notify_list"]
+    except Exception as e:  # noqa: BLE001
+        return format_error_response(UpdateDashboardResponse, e, required_scope="dashboards_write")
 
-        if tags is not None:
-            dashboard_data["tags"] = tags
-        elif "tags" in existing_dict:
-            dashboard_data["tags"] = existing_dict["tags"]
 
-        body = Dashboard(**dashboard_data)
-        response = api_instance.update_dashboard(dashboard_id, body=body)
-
-        return {
-            "success": True,
-            "dashboard_id": response.id if hasattr(response, "id") else dashboard_id,
-            "url": response.url if hasattr(response, "url") else None,
-            "title": response.title if hasattr(response, "title") else title,
+_WIDGET_TEMPLATES: dict[str, dict[str, Any]] = {
+    "timeseries": {
+        "definition": {
+            "type": "timeseries",
+            "title": "CPU usage over time",
+            "requests": [{"q": "avg:system.cpu.user{*}", "display_type": "line"}],
         }
+    },
+    "query_value": {
+        "definition": {
+            "type": "query_value",
+            "title": "Current error rate",
+            "requests": [
+                {"q": "sum:trace.web.request.errors{env:prod}.as_count()", "aggregator": "sum"}
+            ],
+        }
+    },
+    "toplist": {
+        "definition": {
+            "type": "toplist",
+            "title": "Top 10 services by request count",
+            "requests": [
+                {"q": "top(sum:trace.web.request.hits{*} by {service}, 10, 'sum', 'desc')"}
+            ],
+        }
+    },
+    "heatmap": {
+        "definition": {
+            "type": "heatmap",
+            "title": "Request latency distribution",
+            "requests": [{"q": "avg:trace.web.request.duration{*} by {host}"}],
+        }
+    },
+}
 
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+
+def register_dashboard_tools(mcp: FastMCP) -> None:
+    """Register dashboard CRUD tools (no delete) and the widget-templates resource on `mcp`."""
+
+    @mcp.resource("datadog://widget-templates")
+    def widget_templates() -> str:
+        """Ready-to-use widget definitions for `create_new_dashboard`/`update_existing_dashboard`.
+
+        Covers the widget types most commonly requested (timeseries,
+        query_value, toplist, heatmap). `timeseries`/`query_value`/`toplist`
+        widgets are pre-flight validated server-side (missing `requests` or
+        a `type` typo is rejected before the API call); other widget types
+        are passed straight through to Datadog. See Datadog's dashboard
+        widgets API documentation for the full list of ~40 widget types and
+        every optional field.
+        """
+        return json.dumps(
+            {
+                "usage": (
+                    "Each value below is a complete widget object - pass a list of these "
+                    "(with your own query/title) as the `widgets` argument."
+                ),
+                "templates": _WIDGET_TEMPLATES,
+            },
+            indent=2,
+        )
+
+    @mcp.tool(annotations=READ_ONLY)
+    def list_all_dashboards(
+        filter_query: str | None = None, limit: int = 100
+    ) -> ListAllDashboardsResponse:
+        """Browse all Datadog dashboards.
+
+        Use this when: want to see what dashboards exist or find a specific dashboard.
+
+        Args:
+            filter_query: Search term to filter by name (case-insensitive substring match)
+            limit: Max dashboards to return (default: 100)
+        """
+        return _list_dashboards(filter_query, limit, get_auth_instance())
+
+    @mcp.tool(annotations=READ_ONLY)
+    def get_dashboard_details(dashboard_id: str) -> GetDashboardDetailsResponse:
+        """Get complete dashboard configuration and widgets.
+
+        Use this when: need to see what's in a dashboard or copy its configuration.
+        Large dashboards may have their widget list truncated (see the `truncated`/
+        `warning`/`total_available` fields) to stay within the response size budget.
+
+        Args:
+            dashboard_id: Dashboard ID from list_all_dashboards
+        """
+        return _get_dashboard(dashboard_id, get_auth_instance())
+
+    @mcp.tool(annotations=WRITE_ADDITIVE)
+    def create_new_dashboard(
+        title: str,
+        layout_type: str,
+        widgets: list[dict[str, Any]],
+        description: str | None = None,
+        template_variables: list[dict[str, Any]] | None = None,
+        notify_list: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> CreateDashboardResponse:
+        """Create a new dashboard with custom widgets and layout.
+
+        Use this when: user wants to visualize metrics, create a monitoring view, or track KPIs.
+        See the datadog://widget-templates resource for ready-to-use widget definitions
+        for the most common widget types (timeseries, query_value, toplist).
+
+        Layout types:
+        - "ordered": Timeline view (widgets stacked vertically)
+        - "free": Free-form placement (drag anywhere)
+
+        Args:
+            title: Dashboard name
+            layout_type: "ordered" or "free"
+            widgets: Widget definitions (see datadog://widget-templates or Datadog API docs)
+            description: Optional description
+            template_variables: Optional filters/variables
+            notify_list: Optional notification handles
+            tags: Optional tags
+        """
+        return _create_dashboard(
+            title,
+            layout_type,
+            widgets,
+            description,
+            template_variables,
+            notify_list,
+            tags,
+            get_auth_instance(),
+        )
+
+    @mcp.tool(annotations=WRITE_OVERWRITE)
+    def update_existing_dashboard(
+        dashboard_id: str,
+        title: str | None = None,
+        widgets: list[dict[str, Any]] | None = None,
+        description: str | None = None,
+        template_variables: list[dict[str, Any]] | None = None,
+        layout_type: str | None = None,
+        notify_list: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> UpdateDashboardResponse:
+        """Modify an existing dashboard. Overwrites the given fields; anything omitted is unchanged.
+
+        Use this when: need to add widgets, change layout, or update dashboard config.
+        There is no undo tool for dashboard updates - the previous widget/config state
+        is not recoverable through this server once overwritten.
+
+        Args:
+            dashboard_id: Dashboard to update
+            title: New title (optional)
+            widgets: New widgets (optional, replaces the entire widget list)
+            description: New description (optional)
+            template_variables: New variables (optional)
+            layout_type: New layout (optional)
+            notify_list: New notification handles (optional)
+            tags: New tags (optional)
+        """
+        return _update_dashboard(
+            dashboard_id,
+            title,
+            widgets,
+            description,
+            template_variables,
+            layout_type,
+            notify_list,
+            tags,
+            get_auth_instance(),
+        )
